@@ -411,7 +411,7 @@ class BacktestEngine:
             # guard against inf/NaN
             p = pd.to_numeric(p, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
             if p.empty:
-    continue
+                continue
 
 portfolio_returns.append(p)
 
