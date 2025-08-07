@@ -399,10 +399,21 @@ class BacktestEngine:
 
             # Realize period returns (apply txn cost on first day)
             period_rets = daily_returns.loc[cur:nxt]
-            if not period_rets.empty:
-                p = (period_rets * target_w).sum(axis=1)
-                p.iloc[0] -= float(transaction_costs[-1])
-                portfolio_returns.append(p.astype(float))
+            # Require at least 2 observations in the period to avoid zero-std / NaN KPIs
+            if period_rets is None or len(period_rets) < 2:
+                continue
+            
+            p = (period_rets * target_w).sum(axis=1).astype(float)
+            
+            # apply transaction cost on the first day of the period
+            p.iloc[0] = p.iloc[0] - float(transaction_costs[-1])
+            
+            # guard against inf/NaN
+            p = pd.to_numeric(p, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            if p.empty:
+    continue
+
+portfolio_returns.append(p)
 
             rec = target_w.to_dict()
             rec.update({
@@ -448,6 +459,8 @@ class BacktestEngine:
         bench = {}
         if "BTC" in prices_df.columns:
             btc = compute_returns_from_data(prices_df[["BTC"]])["BTC"]
+            # align BTC exactly to the strategy period
+            btc = btc.reindex(r.index).dropna()
             btc = pd.to_numeric(btc, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
             if len(btc) > 0:
                 cum_btc = float(np.prod(1.0 + btc.values))
@@ -683,9 +696,18 @@ def main():
 
     # ======== Summary KPIs ======== #
     st.header("📊 Recommended Portfolio")
-    strat_ret_annual = strategy_returns.mean() * 252
-    strat_vol_annual = strategy_returns.std() * np.sqrt(252)
-    strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
+    valid_sr = pd.to_numeric(strategy_returns, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if valid_sr.empty:
+        strat_ret_annual = np.nan
+        strat_vol_annual = np.nan
+        strat_sharpe = 0.0
+    else:
+        # crypto trades daily; 365 is fine too — pick one and be consistent
+        ann_factor = 365.0
+        strat_ret_annual = valid_sr.mean() * ann_factor
+        strat_vol_annual = valid_sr.std() * np.sqrt(ann_factor)
+        strat_sharpe = (strat_ret_annual / strat_vol_annual) if (strat_vol_annual and strat_vol_annual > 0) else 0.0
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
     c2.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
