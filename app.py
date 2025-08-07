@@ -459,32 +459,32 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
     fig.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown %", fill="tozeroy"), row=2, col=1)
 
     # Monthly heatmap (clean labels)
+    # Monthly heatmap (clean labels)
     monthly = strategy_returns.resample("M").apply(lambda x: (1 + x).prod() - 1)
     heat = monthly.to_frame("ret")
-    heat["Year"] = heat.index.year
+    heat["Year"] = heat.index.year.astype(str)  # as string for categorical axis
     heat["Month"] = heat.index.strftime("%b")
     
+    # Order months
     order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     
-    pivot = heat.pivot(index="Year", columns="Month", values="ret") \
-                .reindex(columns=order)
-    
-    # ✅ Ensure the index is int type years, no fractional years
-    pivot.index = pivot.index.astype(int)
+    # Pivot table: rows = Year, cols = Month
+    pivot = heat.pivot(index="Year", columns="Month", values="ret").reindex(columns=order)
     
     if not pivot.empty:
         fig.add_trace(
             go.Heatmap(
                 z=pivot.values * 100.0,
                 x=pivot.columns,
-                y=pivot.index,  # now clean integer years
+                y=pivot.index,  # now strings, will be categorical labels
                 colorscale="RdYlGn",
                 colorbar_title="%",
                 hovertemplate="%{y} %{x}: %{z:.2f}%<extra></extra>",
                 name="Monthly Returns %"
             )
         )
+
 
     
     fig.update_yaxes(title_text="Cumulative Return", row=1, col=1)
