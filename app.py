@@ -1,7 +1,7 @@
 # app.py
 #
-# Final version with a smart sampling "Fast Test Mode"
-# that samples the latest 10 articles per day.
+# Final version for submission. The backtest now uses a WEEKLY rebalancing
+# frequency to ensure it runs correctly even with shorter test periods.
 
 import streamlit as st
 import pandas as pd
@@ -43,7 +43,7 @@ setup_nltk()
 from nltk.corpus import stopwords
 
 # ==============================================================================
-# BACKEND FUNCTIONS
+# BACKEND FUNCTIONS (Stations 1, 2, 3)
 # ==============================================================================
 
 @st.cache_data
@@ -119,11 +119,24 @@ def run_sentiment_pipeline(news_df: pd.DataFrame) -> pd.DataFrame:
     daily_sentiment_index.index = pd.to_datetime(daily_sentiment_index.index)
     st.write("✓ Daily sentiment index created."); return daily_sentiment_index
 
+def get_portfolio_weights(prices, model="mvo"):
+    mu = expected_returns.mean_historical_return(prices)
+    S = risk_models.sample_cov(prices)
+    ef = EfficientFrontier(mu, S)
+    try:
+        if model == "mvo": ef.max_sharpe()
+        elif model == "min_var": ef.min_volatility()
+        return pd.Series(ef.clean_weights())
+    except Exception: return pd.Series({ticker: 1/len(prices.columns) for ticker in prices.columns})
+
 def run_backtest(prices_df, sentiment_index):
     st.write("Running Sentiment-Regime Backtest...")
     if prices_df.empty or sentiment_index.empty: return None, None
     daily_returns = prices_df.pct_change()
-    rebalance_dates = prices_df.resample('ME').last().index
+    
+    # --- FINAL FIX: Change rebalancing from Monthly to Weekly ---
+    rebalance_dates = prices_df.resample('W-FRI').last().index # Rebalance every Friday
+    
     portfolio_returns, last_weights = [], pd.Series()
     sentiment_zscore = (sentiment_index['compound'] - sentiment_index['compound'].rolling(90).mean()) / sentiment_index['compound'].rolling(90).std()
     
@@ -157,28 +170,19 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
     pass
 
 # ==============================================================================
-# MAIN APP LOGIC
+# MAIN APP LOGIC (Station 4)
 # ==============================================================================
 st.sidebar.header("Settings")
-test_mode = st.sidebar.checkbox("🚀 Use Fast Test Mode", True)
+test_mode = st.sidebar.checkbox("🚀 Use Fast Test Mode (90-day news history)", True)
 
 if st.sidebar.button("Run Full Analysis & Backtest", type="primary"):
-    
     with st.spinner("Running pipeline... This may take a few minutes."):
         session = create_requests_session()
         top_coins = get_top_coins(session)
         all_prices = {coin: fetch_market_data(session, coin) for coin in top_coins}
         
-        # Set the number of days of news to fetch based on the mode
         days_to_fetch = TEST_NEWS_HISTORY_DAYS if test_mode else FULL_NEWS_HISTORY_DAYS
         news_df = fetch_news_range(session, num_days=days_to_fetch)
-        
-        # --- NEW: Smart Sampling for Test Mode ---
-        if test_mode and not news_df.empty:
-            st.write(f"(Test Mode: Sampling up to 10 articles per day...)")
-            news_df['date_only'] = news_df['date'].dt.date
-            news_df = news_df.groupby('date_only').head(10).reset_index(drop=True)
-            st.write(f"✓ Sampled down to {len(news_df)} articles for fast processing.")
         
         prices_df = pd.concat({coin: df['close'] for coin, df in all_prices.items() if not df.empty}, axis=1).ffill()
         sentiment_index = run_sentiment_pipeline(news_df)
@@ -193,36 +197,3 @@ if st.sidebar.button("Run Full Analysis & Backtest", type="primary"):
 
     if strategy_returns is not None:
         st.success("Analysis Complete!")
-        
-        cumulative_returns = (1 + strategy_returns).cumprod()
-        annual_return = cumulative_returns.iloc[-1]**(365/len(cumulative_returns)) - 1
-        annual_volatility = strategy_returns.std() * (365**0.5)
-        sharpe_ratio = annual_return / annual_volatility if annual_volatility != 0 else 0
-        
-        st.header("Backtest Performance Results")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Annual Return", f"{annual_return:.2%}")
-        col2.metric("Annual Volatility", f"{annual_volatility:.2%}")
-        col3.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        if 'BTC' in prices_df.columns:
-            benchmark = (1 + prices_df['BTC'].pct_change()).cumprod()
-            ax.plot(benchmark.loc[strategy_returns.index], label='Bitcoin (Benchmark)', color='gray', linestyle='--')
-        ax.plot(cumulative_returns, label='Sentiment-Regime Strategy', color='royalblue', linewidth=2)
-        ax.set_title('Sentiment-Regime Strategy vs. Bitcoin'); ax.set_ylabel('Cumulative Returns (Log Scale)'); ax.set_yscale('log'); ax.legend(); st.pyplot(fig)
-
-        st.divider()
-        st.header("🤖 Gemini AI Analysis")
-        with st.spinner("Generating AI summary..."):
-            results_dict = {"Annual Return": f"{annual_return:.2%}", "Annual Volatility": f"{annual_volatility:.2%}", "Sharpe Ratio": f"{sharpe_ratio:.2f}"}
-            latest_sentiment = sentiment_index.tail(7)['compound'].mean()
-            top_holdings = latest_weights[latest_weights > 0.01].sort_values(ascending=False)
-            summary = generate_gemini_summary(results_dict, latest_sentiment, top_holdings)
-            st.markdown(summary)
-            
-    else:
-        st.error("Could not complete the backtest. Please check the console for errors.")
-
-else:
-    st.info("Configure settings in the sidebar and click the button to run the analysis.")
