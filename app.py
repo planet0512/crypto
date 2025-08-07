@@ -623,91 +623,138 @@ class BacktestEngine:
 # ENHANCED VISUALIZATION FUNCTIONS
 # ==============================================================================
 
-def create_performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame, metrics: Dict):
-    """Create comprehensive performance dashboard using Plotly."""
-    
-    # Cumulative returns chart
-    # give each subplot breathing room
-    fig_perf.update_layout(
-        height=800,
-        width=1200,                 # or use_container_width=False
-        margin=dict(l=60, r=120, t=60, b=60),
-    )
+def create_performance_dashboard(
+    strategy_returns: pd.Series,
+    prices_df: pd.DataFrame,
+    metrics: Dict
+) -> go.Figure:
+    """Create the four-panel performance dashboard."""
 
-# tidy legend
-    fig_perf.update_layout(legend=dict(
-        orientation="h",
-        x=0, y=-0.15,
-        bgcolor="rgba(0,0,0,0)"
-    ))
-
-    
+    # ------------------------------------------------------------------
+    # 1) Build the subplot grid
+    # ------------------------------------------------------------------
     fig_perf = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Cumulative Performance', 'Rolling Sharpe Ratio', 'Drawdown Analysis', 'Monthly Returns Heatmap'),
+        subplot_titles=(
+            "Cumulative Performance",
+            "Rolling Sharpe Ratio",
+            "Drawdown Analysis",
+            "Monthly Returns Heatmap"
+        ),
         specs=[[{"secondary_y": True}, {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": False}]]
     )
-    
-    # Calculate cumulative returns
+
+    # ------------------------------------------------------------------
+    # 2) Cumulative performance (top-left)
+    # ------------------------------------------------------------------
     strategy_cum = (1 + strategy_returns).cumprod()
-    
-    # Plot strategy performance
     fig_perf.add_trace(
-        go.Scatter(x=strategy_cum.index, y=strategy_cum.values, name='AlphaSent Strategy', line=dict(color='#3B82F6', width=3)),
+        go.Scatter(
+            x=strategy_cum.index,
+            y=strategy_cum.values,
+            name="AlphaSent Strategy",
+            line=dict(color="#3B82F6", width=3)
+        ),
         row=1, col=1
     )
-    
-    # Add Bitcoin benchmark if available
-    if 'BTC' in prices_df.columns:
-        btc_returns = prices_df['BTC'].pct_change().dropna()
-        btc_cum = (1 + btc_returns).cumprod()
-        # Align with strategy returns
-        btc_aligned = btc_cum.reindex(strategy_cum.index, method='ffill')
+
+    # Bitcoin benchmark
+    if "BTC" in prices_df.columns:
+        btc_returns = prices_df["BTC"].pct_change().dropna()
+        btc_cum = (1 + btc_returns).cumprod().reindex(strategy_cum.index, method="ffill")
         fig_perf.add_trace(
-            go.Scatter(x=btc_aligned.index, y=btc_aligned.values, name='Bitcoin', line=dict(color='#F7931A', width=2, dash='dash')),
+            go.Scatter(
+                x=btc_cum.index,
+                y=btc_cum.values,
+                name="Bitcoin",
+                line=dict(color="#F7931A", width=2, dash="dash")
+            ),
             row=1, col=1
         )
-    
-    # Rolling Sharpe ratio
-    rolling_sharpe = strategy_returns.rolling(window=90).apply(
+
+    # ------------------------------------------------------------------
+    # 3) Rolling Sharpe (top-right)
+    # ------------------------------------------------------------------
+    rolling_sharpe = strategy_returns.rolling(90).apply(
         lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 else 0
     )
     fig_perf.add_trace(
-        go.Scatter(x=rolling_sharpe.index, y=rolling_sharpe.values, name='90-Day Rolling Sharpe', line=dict(color='#10B981')),
+        go.Scatter(
+            x=rolling_sharpe.index,
+            y=rolling_sharpe.values,
+            name="90-Day Rolling Sharpe",
+            line=dict(color="#10B981")
+        ),
         row=1, col=2
     )
-    
-    # Drawdown analysis
+
+    # ------------------------------------------------------------------
+    # 4) Drawdown (bottom-left)
+    # ------------------------------------------------------------------
     rolling_max = strategy_cum.expanding().max()
     drawdown = (strategy_cum - rolling_max) / rolling_max * 100
     fig_perf.add_trace(
-        go.Scatter(x=drawdown.index, y=drawdown.values, fill='tonexty', name='Drawdown %', line=dict(color='#EF4444')),
+        go.Scatter(
+            x=drawdown.index,
+            y=drawdown.values,
+            fill="tonexty",
+            name="Drawdown %",
+            line=dict(color="#EF4444")
+        ),
         row=2, col=1
     )
-    
-    # Monthly returns heatmap
-    monthly_returns = strategy_returns.resample('M').apply(lambda x: (1 + x).prod() - 1) * 100
-    monthly_pivot = monthly_returns.groupby([monthly_returns.index.year, monthly_returns.index.month]).first().unstack(fill_value=0)
-    
+
+    # ------------------------------------------------------------------
+    # 5) Monthly returns heat-map (bottom-right)
+    # ------------------------------------------------------------------
+    monthly_returns = (
+        strategy_returns
+        .resample("M")
+        .apply(lambda x: (1 + x).prod() - 1)
+        * 100
+    )
+    monthly_pivot = (
+        monthly_returns
+        .groupby([monthly_returns.index.year, monthly_returns.index.month])
+        .first()
+        .unstack(fill_value=0)
+    )
+
     if not monthly_pivot.empty:
         fig_perf.add_trace(
             go.Heatmap(
                 z=monthly_pivot.values,
                 x=[f"Month {i}" for i in range(1, 13)],
                 y=monthly_pivot.index,
-                colorscale='RdYlGn',
-                name='Monthly Returns %'
+                colorscale="RdYlGn",
+                name="Monthly Returns %"
             ),
             row=2, col=2
         )
-    
-    fig_perf.update_layout(height=800, showlegend=True, title_text="AlphaSent Performance Dashboard")
+
+    # ------------------------------------------------------------------
+    # 6) Final layout pass (spacing, legend, titles)
+    # ------------------------------------------------------------------
+    fig_perf.update_layout(
+        height=800,            # overall figure height
+        width=1200,            # drop if you prefer use_container_width
+        margin=dict(l=60, r=120, t=60, b=60),
+        legend=dict(
+            orientation="h",
+            x=0, y=-0.15,      # below the figure
+            bgcolor="rgba(0,0,0,0)"
+        ),
+        title_text="AlphaSent Performance Dashboard",
+        showlegend=True
+    )
+
     fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1)
-    fig_perf.update_yaxes(title_text="Sharpe Ratio", row=1, col=2)
-    fig_perf.update_yaxes(title_text="Drawdown %", row=2, col=1)
-    
+    fig_perf.update_yaxes(title_text="Sharpe Ratio",       row=1, col=2)
+    fig_perf.update_yaxes(title_text="Drawdown %",         row=2, col=1)
+
     return fig_perf
+
 
 def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     """Create sentiment analysis visualization."""
