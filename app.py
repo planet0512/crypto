@@ -138,16 +138,25 @@ def fetch_live_news(api_key: str) -> pd.DataFrame:
 # Robust returns handling
 # ------------------------------------------------------------------------------
 def compute_returns_from_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect prices vs returns and return cleaned daily returns."""
+    """
+    Detect whether df looks like prices or returns and compute safe daily returns.
+    Cleans inf/NaN and clips extreme negatives to avoid compounding blowups.
+    """
     df = df.copy()
 
-    # Heuristic: prices are positive and typically > 1
-    numeric = df.apply(pd.to_numeric, errors="coerce")
-    looks_like_prices = (numeric.min().min() > 0) and (numeric.median().median() > 1)
+    looks_like_prices = (
+        df.min(numeric_only=True).min() > 0
+        and df.median(numeric_only=True).median() > 1
+    )
 
-    rets = numeric.pct_change() if looks_like_prices else numeric
+    if looks_like_prices:
+        rets = df.pct_change()
+    else:
+        rets = df
+
     rets = rets.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=-0.95)
     return rets
+
 
 # ------------------------------------------------------------------------------
 # Optimizer
@@ -244,7 +253,8 @@ class BacktestEngine:
     def run_backtest(self, prices_df: pd.DataFrame, sentiment_data: pd.DataFrame):
         st.info("🚀 Initiating Enhanced Backtest Engine...")
 
-        daily_returns = compute_returns_from_data(prices_df)
+        daily_returns = prices_df.pct_change().fillna(0)
+
 
         rebalance_dates = prices_df.resample("ME").last().index
         rebalance_dates = [d for d in rebalance_dates if d in prices_df.index]
@@ -356,8 +366,10 @@ class BacktestEngine:
         if r.empty: return {}
 
         n = len(r)
-        cum = float(np.prod(1.0 + r.values))
-        ann_ret = (cum ** (365.0 / n) - 1.0) if cum > 0 else np.nan
+        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+        cum = np.prod(1.0 + returns.values)
+        annualized_return = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
+
         ann_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
         sharpe = (ann_ret / ann_vol) if (ann_vol > 0 and np.isfinite(ann_ret)) else 0.0
 
