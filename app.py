@@ -673,6 +673,27 @@ def main():
     if strategy_returns.empty:
         st.error("Backtest failed.")
         st.stop()
+    # Show Portfolio Recommendation before dashboards
+    st.header("📊 Recommended Portfolio")
+    
+    if strategy_returns.empty:
+        st.warning("Run the backtest to generate portfolio stats.")
+    else:
+        # Annualized stats
+        strat_ret_annual = strategy_returns.mean() * 252
+        strat_vol_annual = strategy_returns.std() * np.sqrt(252)
+        strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
+    
+        st.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
+        st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
+        st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
+    
+        # Show latest allocation
+        if not allocation_history.empty:
+            st.subheader("Current Asset Allocation")
+            latest_alloc = allocation_history.iloc[-1] * 100  # convert to %
+            st.bar_chart(latest_alloc)
+
 
     # Tabs
     tab0, tab1, tab2, tab3, tab4 = st.tabs(["Portfolio Analysis","📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
