@@ -33,8 +33,10 @@ st.set_page_config(
 st.title("📈 Project AlphaSent")
 st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Allocation")
 
-# --- API KEY CONFIGURATION ---
+# --- API KEY & SETTINGS ---
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+NEWS_HISTORY_DAYS = 730 # Fetches 2 years of news to ensure enough data for backtest lookback periods
+MAX_NEWS_ARTICLES_FOR_TESTING = 300
 
 # --- NLTK DATA DOWNLOADER FOR STREAMLIT CLOUD ---
 @st.cache_resource
@@ -49,11 +51,7 @@ def setup_nltk():
 
 # Run the setup at the start of the app
 setup_nltk()
-
 from nltk.corpus import stopwords
-
-# --- TESTING CONFIGURATION ---
-MAX_NEWS_ARTICLES_FOR_TESTING = 300
 
 # ==============================================================================
 # BACKEND FUNCTIONS (Stations 1, 2, 3)
@@ -61,6 +59,7 @@ MAX_NEWS_ARTICLES_FOR_TESTING = 300
 
 @st.cache_data
 def create_requests_session() -> requests.Session:
+    """Creates a requests session with a retry policy for network robustness."""
     session = requests.Session()
     retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retries)
@@ -70,6 +69,7 @@ def create_requests_session() -> requests.Session:
 
 @st.cache_data
 def get_top_coins(_session, limit=15) -> list:
+    """Fetches top non-stablecoin coins, guaranteeing BTC and ETH."""
     st.write(f"Fetching Top {limit} Coins by Market Cap...")
     core_assets, url = ['BTC', 'ETH'], f"https://min-api.cryptocompare.com/data/top/mktcapfull?limit=25&tsym=USD"
     try:
@@ -88,6 +88,7 @@ def get_top_coins(_session, limit=15) -> list:
 
 @st.cache_data
 def fetch_market_data(_session, symbol, limit=2000) -> pd.DataFrame:
+    """Fetches historical price data for a single coin."""
     url = "https://min-api.cryptocompare.com/data/v2/histoday"
     params = {"fsym": symbol, "tsym": "USD", "limit": limit}
     try:
@@ -100,6 +101,7 @@ def fetch_market_data(_session, symbol, limit=2000) -> pd.DataFrame:
 
 @st.cache_data
 def fetch_news_range(_session, start_dt, end_dt, max_articles=None):
+    """Fetches news for a date range, with an optional max article limit."""
     st.write(f"Fetching news from {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}...")
     if max_articles: st.write(f"(Test Mode: Limiting to {max_articles} articles)")
     url, out, current_end_dt = "https://data-api.coindesk.com/news/v1/article/list", [], end_dt
@@ -123,6 +125,7 @@ def fetch_news_range(_session, start_dt, end_dt, max_articles=None):
 
 @st.cache_data
 def run_sentiment_pipeline(news_df: pd.DataFrame) -> pd.DataFrame:
+    """Processes news data and calculates daily sentiment."""
     st.write("Running Sentiment Pipeline...")
     if news_df.empty or "TITLE" not in news_df.columns or "BODY" not in news_df.columns:
         st.warning("Sentiment pipeline skipped: News data is missing or incomplete.")
@@ -139,6 +142,7 @@ def run_sentiment_pipeline(news_df: pd.DataFrame) -> pd.DataFrame:
     st.write("✓ Daily sentiment index created."); return daily_sentiment_index
 
 def get_portfolio_weights(prices, model="mvo"):
+    """Calculates optimal weights for a given portfolio model."""
     mu = expected_returns.mean_historical_return(prices)
     S = risk_models.sample_cov(prices)
     ef = EfficientFrontier(mu, S)
@@ -149,6 +153,7 @@ def get_portfolio_weights(prices, model="mvo"):
     except Exception: return pd.Series({ticker: 1/len(prices.columns) for ticker in prices.columns})
 
 def run_backtest(prices_df, sentiment_index):
+    """Runs the sentiment-regime backtest."""
     st.write("Running Sentiment-Regime Backtest...")
     if prices_df.empty or sentiment_index.empty: return None, None
     daily_returns = prices_df.pct_change()
@@ -181,9 +186,16 @@ def run_backtest(prices_df, sentiment_index):
     st.write("✓ Backtest complete."); return strategy_returns, last_weights
     
 def generate_gemini_summary(results, latest_sentiment, latest_weights):
+    """Generates a summary using OpenRouter and the OpenAI library."""
     if not OPENROUTER_API_KEY: return "Please add your OpenRouter API Key to Streamlit secrets."
     client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
-    prompt_content = f"""...""" # Your prompt here
+    prompt_content = f"""
+    You are a concise financial analyst summarizing a cryptocurrency backtest.
+    Results: Annual Return={results['Annual Return']}, Sharpe Ratio={results['Sharpe Ratio']}.
+    Current State: Latest 7-day average sentiment is {latest_sentiment:.2f}.
+    Final Allocation: {latest_weights.to_string()}
+    Provide a brief, professional summary in three parts: Performance, Sentiment Outlook, and Allocation.
+    """
     try:
         completion = client.chat.completions.create(model="google/gemini-1.5-flash-latest", messages=[{"role": "user", "content": prompt_content}])
         return completion.choices[0].message.content
@@ -203,7 +215,7 @@ if st.sidebar.button("Run Full Analysis & Backtest", type="primary"):
         all_prices = {coin: fetch_market_data(session, coin) for coin in top_coins}
         
         num_articles_to_fetch = MAX_NEWS_ARTICLES_FOR_TESTING if test_mode else None
-        news_df = fetch_news_range(session, datetime.now() - timedelta(days=365), datetime.now(), max_articles=num_articles_to_fetch)
+        news_df = fetch_news_range(session, datetime.now() - timedelta(days=NEWS_HISTORY_DAYS), datetime.now(), max_articles=num_articles_to_fetch)
         
         prices_df = pd.concat({coin: df['close'] for coin, df in all_prices.items() if not df.empty}, axis=1).ffill()
         sentiment_index = run_sentiment_pipeline(news_df)
