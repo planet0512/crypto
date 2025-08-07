@@ -1,0 +1,11 @@
+# requirements.txt
+streamlit
+pandas
+numpy
+requests
+beautifulsoup4
+nltk
+matplotlib
+openai
+pypfopt
+scikit-learn
