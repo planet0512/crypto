@@ -689,6 +689,14 @@ def main():
 
     with tab0:
         # merge your available data for portfolio analysis
+        # Ensure BTC returns exist
+        if 'btc_price_series' in locals():
+            btc_returns = btc_price_series.pct_change().dropna()
+        elif 'btc_prices' in locals():
+            btc_returns = btc_prices.pct_change().dropna()
+        else:
+            st.warning("BTC price data not found — skipping BTC in portfolio analysis.")
+            btc_returns = pd.Series(dtype=float)
         asset_returns = pd.concat([
             strategy_returns.rename("AlphaSent"),
             btc_returns.rename("Bitcoin")
