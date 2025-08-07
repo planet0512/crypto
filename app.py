@@ -693,6 +693,8 @@ def main():
             st.subheader("Current Asset Allocation")
             latest_alloc = allocation_history.iloc[-1] * 100  # convert to %
             st.bar_chart(latest_alloc)
+    
+    st.subheader("Performance Dashboard") 
 
 
     # Tabs
