@@ -7,5 +7,5 @@ beautifulsoup4
 nltk
 matplotlib
 openai
-pypfopt
+PyPortfolioOpt
 scikit-learn
