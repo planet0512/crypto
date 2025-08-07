@@ -602,13 +602,9 @@ def portfolio_recommendation_tab(strategy_returns: pd.Series):
     st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
     st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
 
-
 # --------------------------------------------------------------------
 # Main app
 # --------------------------------------------------------------------
-def main():
-    # your existing main() code...
-
 
 def main():
     if not setup_nltk():
