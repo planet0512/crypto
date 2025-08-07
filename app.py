@@ -77,6 +77,18 @@ def setup_nltk():
 # Requests + Data
 # ------------------------------------------------------------------------------
 @st.cache_data(ttl=300)
+def get_sentiment_label(score: float) -> str:
+    """
+    Convert a VADER compound sentiment score into a human-readable label.
+    """
+    if score > 0.05:
+        return "Positive"
+    elif score < -0.05:
+        return "Negative"
+    else:
+        return "Neutral"
+
+
 def create_requests_session() -> requests.Session:
     s = requests.Session()
     retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 429])
@@ -103,8 +115,6 @@ def load_data(url: str) -> pd.DataFrame:
     except Exception as e:
         st.error(f"❌ Error loading data: {e}")
         return pd.DataFrame()
-
-@st.cache_data(ttl=900)
 
 @st.cache_data(ttl=900)
 def fetch_live_news(api_key: str) -> pd.DataFrame:
