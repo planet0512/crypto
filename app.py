@@ -685,9 +685,9 @@ def main():
         st.stop()
 
     # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["Portfolio Analysis","📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
+    tab0, tab1, tab2, tab3, tab4 = st.tabs(["Portfolio Analysis","📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
 
-    with tabs[0]:
+    with tab0:
         # merge your available data for portfolio analysis
         asset_returns = pd.concat([
             strategy_returns.rename("AlphaSent"),
