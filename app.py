@@ -1,33 +1,30 @@
 
-
 # app.py
-#
-# FINAL SUBMISSION VERSION.
-# - Loads pre-processed price data from final_app_data.csv.
-# - Loads RAW news data from stage_1_news_raw.csv.gz.
-# - Runs the full sentiment and backtesting pipeline in the app.
+# FINAL SUBMISSION VERSION
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
+import requests
 from datetime import datetime
+import matplotlib.pyplot as plt
 from bs4 import BeautifulSoup
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-import matplotlib.pyplot as plt
 from pypfopt import EfficientFrontier, risk_models, expected_returns
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ==============================================================================
-# PAGE CONFIGURATION & SETUP
+# PAGE CONFIGURATION
 # ==============================================================================
 st.set_page_config(page_title="Project AlphaSent", page_icon="📈", layout="wide")
 st.title("📈 Project AlphaSent")
 st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Allocation")
 
 # --- CONFIGURATION ---
-# IMPORTANT: These must be the 'raw' URLs from your public GitHub repository
-PRICE_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
-RAW_NEWS_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/stage_1_news_raw.csv.gz"
+DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
+
+CRYPTOCOMPARE_API_KEY = st.secrets.get("94962fd845ea903749954d66cd59c12c0ee2ee6d8d1f45b3c74e461e9cdc5757", "")
 
 @st.cache_resource
 def setup_nltk():
@@ -38,98 +35,130 @@ setup_nltk()
 # BACKEND FUNCTIONS
 # ==============================================================================
 @st.cache_data
-def load_data(url, is_news=False):
-    """Loads and prepares data from a GitHub URL."""
-    st.write(f"Loading data from {url.split('/')[-1]}...")
+def load_data(url):
+    st.write(f"Loading historical backtest data from GitHub...")
     try:
-        if is_news:
-            df = pd.read_csv(url, compression='gzip', low_memory=False)
-        else:
-            df = pd.read_csv(url, index_col=0, parse_dates=True)
-            df.index.name = 'time'
-        st.write("✓ Data loaded successfully.")
+        df = pd.read_csv(url, index_col=0, parse_dates=True)
+        df.index.name = 'time'
+        st.write("✓ Backtest data loaded successfully.")
         return df
     except Exception as e:
-        st.error(f"Error loading data from GitHub: {e}"); return pd.DataFrame()
+        st.error(f"Error loading data: {e}"); return pd.DataFrame()
 
-@st.cache_data
-def run_sentiment_pipeline(raw_news_df: pd.DataFrame) -> pd.DataFrame:
-    """Processes raw news data and calculates daily sentiment."""
-    st.write("Running Sentiment Pipeline on raw news data...")
-    if raw_news_df.empty: return pd.DataFrame()
-    df = raw_news_df.copy()
-    df.columns = [col.lower() for col in df.columns]
-    
-    df['published_on'] = pd.to_numeric(df['published_on'], errors='coerce')
-    df.dropna(subset=['published_on'], inplace=True)
-    
-    df['text_to_analyze'] = df['title'].fillna('') + ". " + df['body'].fillna('')
-    df['clean_text'] = df['text_to_analyze'].apply(lambda text: re.sub(r'[^A-Za-z\s]+', '', BeautifulSoup(str(text), "html.parser").get_text()).lower().strip())
-    
-    analyzer = SentimentIntensityAnalyzer()
-    sentiment_scores = df['clean_text'].apply(lambda text: analyzer.polarity_scores(text))
-    df = pd.concat([df[['published_on']], sentiment_scores.apply(pd.Series)], axis=1)
-    
-    df['date'] = pd.to_datetime(df['published_on'], unit='s')
-    df['date_only'] = df['date'].dt.date
-    daily_sentiment_index = df.groupby('date_only')[['compound']].mean()
-    daily_sentiment_index.index = pd.to_datetime(daily_sentiment_index.index)
-    st.write("✓ Daily sentiment index created."); return daily_sentiment_index
-
-def run_backtest(prices_df, sentiment_index):
-    """Runs the sentiment-regime backtest."""
+def run_backtest(full_data_df):
     st.write("Running Sentiment-Regime Backtest...")
-    if prices_df.empty or sentiment_index.empty: return None
+    prices_df = full_data_df.drop(columns=['compound'], errors='ignore')
+    sentiment_index = full_data_df[['compound']].dropna()
+    if prices_df.empty or sentiment_index.empty: return None, None
+    
     daily_returns = prices_df.pct_change()
     rebalance_dates = prices_df.resample('W-FRI').last().index
-    if len(rebalance_dates) < 2: return None
+    if len(rebalance_dates) < 2: return None, None
         
-    portfolio_returns = []
+    portfolio_returns, last_weights = [], pd.Series()
+    sentiment_zscore = (sentiment_index['compound'] - sentiment_index['compound'].rolling(90).mean()) / sentiment_index['compound'].rolling(90).std()
     
     for i in range(len(rebalance_dates) - 1):
         start_date, end_date = rebalance_dates[i], rebalance_dates[i+1]
+        sentiment_slice = sentiment_zscore.loc[:start_date].dropna()
+        if sentiment_slice.empty: continue
+        sentiment_signal = sentiment_slice.iloc[-1]
+        if pd.isna(sentiment_signal): sentiment_signal = 0
+        mvo_weight, min_var_weight = (0.8, 0.2) if sentiment_signal > 1.0 else (0.2, 0.8)
+        hist_prices = prices_df.loc[:start_date].tail(90)
+        if hist_prices.shape[0] < 90: continue
         
-        # Get the single sentiment score for the day
-        if start_date.date() not in sentiment_index.index.date: continue
-        sentiment_signal = sentiment_index.loc[str(start_date.date())]['compound'].iloc[0]
-        if pd.isna(sentiment_signal): continue
-        
-        # Simple Strategy: If sentiment > 0, go long BTC. If < 0, hold cash.
-        if sentiment_signal > 0:
-            period_returns = daily_returns.loc[start_date:end_date]['BTC']
-        else:
-            period_returns = pd.Series(0, index=[end_date])
+        try:
+            mu = expected_returns.mean_historical_return(hist_prices)
+            S = risk_models.sample_cov(hist_prices)
+            ef_mvo = EfficientFrontier(mu, S); ef_mvo.max_sharpe()
+            mvo_weights = pd.Series(ef_mvo.clean_weights())
+            ef_min_var = EfficientFrontier(mu, S); ef_min_var.min_volatility()
+            min_var_weights = pd.Series(ef_min_var.clean_weights())
+            target_weights = (mvo_weight * mvo_weights + min_var_weight * min_var_weights).fillna(0)
+        except Exception:
+            # Fallback to equal weight if optimizer fails
+            target_weights = pd.Series(1/len(hist_prices.columns), index=hist_prices.columns)
 
+        turnover = (target_weights - last_weights.reindex(target_weights.index).fillna(0)).abs().sum() / 2
+        costs = turnover * (25 / 10000)
+        period_returns = (daily_returns.loc[start_date:end_date] * target_weights).sum(axis=1)
+        if not period_returns.empty: period_returns.iloc[0] -= costs
         portfolio_returns.append(period_returns)
+        last_weights = target_weights
 
-    if not portfolio_returns: return None
+    if not portfolio_returns: return None, None
     strategy_returns = pd.concat(portfolio_returns)
-    st.write("✓ Backtest complete."); return strategy_returns
+    st.write("✓ Backtest complete."); return strategy_returns, last_weights
 
+@st.cache_data
+def fetch_and_analyze_live_news(_session, api_key):
+    """Fetches latest news and analyzes sentiment for display."""
+    st.sidebar.write("Fetching live news...")
+    if not api_key:
+        st.sidebar.warning("CryptoCompare API Key not found in secrets.")
+        return pd.DataFrame()
+    
+    url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
+    try:
+        data = _session.get(url).json().get('Data', [])
+        if not data: return pd.DataFrame()
+        df = pd.DataFrame(data).head(10)
+        analyzer = SentimentIntensityAnalyzer()
+        df['compound'] = df['title'].fillna('').apply(lambda txt: analyzer.polarity_scores(txt)['compound'])
+        return df[['title', 'source', 'compound']]
+    except Exception:
+        return pd.DataFrame()
 
 # ==============================================================================
 # MAIN APP LOGIC
 # ==============================================================================
-st.sidebar.header("AlphaSent Controls")
-if st.sidebar.button("🚀 Run Analysis", type="primary"):
+session = create_requests_session()
+
+# --- Live News Sidebar ---
+st.sidebar.header("Live News Sentiment")
+live_news = fetch_and_analyze_live_news(session, CRYPTOCOMPARE_API_KEY)
+if not live_news.empty:
+    for _, row in live_news.iterrows():
+        st.sidebar.metric(label=f"{row['source']}", value=f"{row['title'][:35]}...", delta=f"{row['compound']:.2f}")
+else:
+    st.sidebar.info("Live news feed unavailable.")
+
+st.sidebar.divider()
+st.sidebar.header("Historical Backtest")
+if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
     
-    # Load both data files from GitHub
-    prices_df = load_data(PRICE_DATA_URL)
-    raw_news_df = load_data(RAW_NEWS_URL, is_news=True)
+    backtest_data = load_data(DATA_URL)
     
-    if not prices_df.empty and not raw_news_df.empty:
-        with st.spinner("Processing sentiment and running backtest..."):
-            sentiment_index = run_sentiment_pipeline(raw_news_df)
-            
-            # Align data by merging
-            full_data = prices_df.merge(sentiment_index, left_index=True, right_index=True, how='left').ffill()
-            
-            strategy_returns = run_backtest(full_data.drop(columns=['compound']), full_data[['compound']])
+    if not backtest_data.empty:
+        with st.spinner("Running backtest..."):
+            strategy_returns, _ = run_backtest(backtest_data)
 
         if strategy_returns is not None:
             st.success("Analysis Complete!")
-            # Display results...
+            
+            cumulative_returns = (1 + strategy_returns).cumprod()
+            annual_return = cumulative_returns.iloc[-1]**(365/len(cumulative_returns)) - 1
+            annual_volatility = strategy_returns.std() * (365**0.5)
+            sharpe_ratio = annual_return / annual_volatility if annual_volatility != 0 else 0
+            
+            st.header("Backtest Performance Results")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Annual Return", f"{annual_return:.2%}")
+            col2.metric("Annual Volatility", f"{annual_volatility:.2%}")
+            col3.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            prices_df = backtest_data.drop(columns=['compound'], errors='ignore')
+            if 'BTC' in prices_df.columns:
+                benchmark = (1 + prices_df['BTC'].pct_change()).cumprod()
+                ax.plot(benchmark.loc[strategy_returns.index], label='Bitcoin (Benchmark)', color='gray', linestyle='--')
+            ax.plot(cumulative_returns, label='Sentiment-Regime Strategy', color='royalblue', linewidth=2)
+            ax.set_title('Sentiment-Regime Strategy vs. Bitcoin'); ax.set_ylabel('Cumulative Returns (Log Scale)'); ax.set_yscale('log'); ax.legend(); st.pyplot(fig)
         else:
             st.error("Could not complete the backtest.")
 else:
-    st.info("Click the button in the sidebar to run the analysis.")
+    st.info("Click the button to run the backtest on the pre-processed historical data.")
+
+
+
