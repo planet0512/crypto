@@ -1,4 +1,3 @@
-
 # streamlit run app.py
 
 import streamlit as st
@@ -22,9 +21,9 @@ import warnings
 import logging
 from typing import Dict, Tuple, Optional
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # Setup
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings("ignore")
 pio.templates.default = "plotly_white"
@@ -41,8 +40,8 @@ st.markdown(
 <style>
     .main > div { padding-top: 1.25rem; }
     .news-item { border-left:4px solid #3498db; padding:0.75rem; margin:0.4rem 0; background:#f8f9fa; border-radius:0 10px 10px 0;}
-    .risk-on { border-left-color:#2ecc71!important; }
-    .risk-off { border-left-color:#e74c3c!important; }
+    .risk-on { border-left-color:#22c55e!important; }
+    .risk-off { border-left-color:#ef4444!important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -51,17 +50,20 @@ st.markdown(
 st.title("📈 Project AlphaSent")
 st.caption("*A Sentiment-Enhanced Framework for Systematic Cryptocurrency Allocation*")
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # Config
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 class Config:
     OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
     CRYPTOCOMPARE_API_KEY = st.secrets.get("CRYPTOCOMPARE_API_KEY", "")
     DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/main/final_app_data.csv"
-    SENTIMENT_THRESHOLDS = {"risk_on": 1.0, "risk_off": -1.0}
+    SENTIMENT_THRESHOLDS = {"risk_on": 1.0, "risk_off": -1.0}  # Z of market sentiment
     TRANSACTION_COST = 0.0025  # 25 bps per side
+    SLIPPAGE = 0.0005          # 5 bps slippage on turnover
     MAX_POSITION_SIZE = 0.30
     LOOKBACK_PERIOD = 90
+    TURNOVER_CAP = 0.50        # 50% per rebalance (L1)
+    SENTIMENT_TILT = 0.10      # beta for μ tilt via per-asset sentiment
 
 @st.cache_resource
 def setup_nltk():
@@ -73,22 +75,9 @@ def setup_nltk():
         st.error(f"Failed to download NLTK data: {e}")
         return False
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # Requests + Data
-# ------------------------------------------------------------------------------
-@st.cache_data(ttl=300)
-def get_sentiment_label(score: float) -> str:
-    """
-    Convert a VADER compound sentiment score into a human-readable label.
-    """
-    if score > 0.05:
-        return "Positive"
-    elif score < -0.05:
-        return "Negative"
-    else:
-        return "Neutral"
-
-
+# ------------------------------------------------------------------------------#
 def create_requests_session() -> requests.Session:
     s = requests.Session()
     retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 429])
@@ -106,77 +95,98 @@ def load_data(url: str) -> pd.DataFrame:
         if df.empty:
             raise ValueError("Loaded data is empty")
 
-        # Drop all-NaN columns and ensure numeric
+        # Drop all-NaN columns and ensure numeric for price columns
         df = df.dropna(axis=1, how="all")
+        # prices: symbols with uppercase tickers; sentiments: 'compound_mkt', 'sent_<SYM>'
         for c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+            if c == "compound_mkt" or c.startswith("sent_") or c.isupper():
+                df[c] = pd.to_numeric(df[c], errors="coerce")
         df = df.replace([np.inf, -np.inf], np.nan).dropna(how="all")
         return df
     except Exception as e:
         st.error(f"❌ Error loading data: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=300)
+def get_sentiment_label(score: float) -> str:
+    if score > 0.05:
+        return "Positive"
+    elif score < -0.05:
+        return "Negative"
+    else:
+        return "Neutral"
+
 @st.cache_data(ttl=900)
 def fetch_live_news(api_key: str) -> pd.DataFrame:
-    """Fetch and analyze live crypto news. Safe for cache_data (no unhashables)."""
+    """Fetch and VADER-score latest crypto news titles (display only)."""
     if not api_key:
         return pd.DataFrame()
-
-    session = create_requests_session()  # this is cache_resource'd
+    session = create_requests_session()
     url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
-
     try:
-        r = session.get(url, timeout=30)
-        r.raise_for_status()
+        r = session.get(url, timeout=30); r.raise_for_status()
         data = r.json().get("Data", [])
         if not data:
             return pd.DataFrame()
-
         df = pd.DataFrame(data).head(20)
-
-        # Sentiment
+        # Sentiment on the fly (titles)
         analyzer = SentimentIntensityAnalyzer()
         df["compound"] = df["title"].fillna("").apply(lambda t: analyzer.polarity_scores(t)["compound"])
         df["sentiment_label"] = df["compound"].apply(get_sentiment_label)
         df["impact_score"] = df["compound"].abs()
-
         return df[["title", "source", "compound", "sentiment_label", "impact_score", "url"]]
     except Exception:
         return pd.DataFrame()
 
-
-
-# ------------------------------------------------------------------------------
-# Robust returns handling
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
+# Utilities
+# ------------------------------------------------------------------------------#
 def compute_returns_from_data(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Detect whether df looks like prices or returns and compute safe daily returns.
-    Cleans inf/NaN and clips extreme negatives to avoid compounding blowups.
-    """
+    """Detect prices vs returns and compute safe daily returns."""
     df = df.copy()
-
-    looks_like_prices = (
-        df.min(numeric_only=True).min() > 0
-        and df.median(numeric_only=True).median() > 1
-    )
-
+    looks_like_prices = (df.min(numeric_only=True).min() > 0) and (df.median(numeric_only=True).median() > 1)
     if looks_like_prices:
         rets = df.pct_change()
     else:
         rets = df
-
     rets = rets.replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=-0.95)
     return rets
 
+def extract_asset_universe(prices_df: pd.DataFrame) -> list:
+    """Heuristic: assets are all-uppercase tickers (BTC, ETH, …)."""
+    return [c for c in prices_df.columns if c.isupper()]
 
-# ------------------------------------------------------------------------------
-# Optimizer
-# ------------------------------------------------------------------------------
+def extract_per_asset_sentiment(sent_df: pd.DataFrame, date) -> pd.Series:
+    """Pull per-asset sentiment on or before 'date' (columns: sent_<SYM>)."""
+    cols = [c for c in sent_df.columns if c.startswith("sent_")]
+    if not cols:
+        return pd.Series(dtype=float)
+    s = sent_df.loc[:date, cols].tail(1)
+    if s.empty:
+        return pd.Series(dtype=float)
+    s = s.squeeze()
+    s.index = [c.replace("sent_", "") for c in s.index]
+    return s
+
+def get_market_sent_z(sent_df: pd.DataFrame, date, window: int = 90) -> float:
+    """Compute market sentiment Z of 'compound_mkt' up to 'date'."""
+    if "compound_mkt" not in sent_df.columns:
+        return 0.0
+    s = sent_df.loc[:date, "compound_mkt"].dropna()
+    if len(s) < 30:
+        return 0.0
+    z = (s - s.rolling(window).mean()) / s.rolling(window).std()
+    z = z.replace([np.inf, -np.inf], np.nan).dropna()
+    return float(z.iloc[-1]) if len(z) else 0.0
+
+# ------------------------------------------------------------------------------#
+# Optimizers
+# ------------------------------------------------------------------------------#
 class PortfolioOptimizer:
-    def __init__(self, transaction_cost: float = 0.0025, max_weight: float = 0.30):
+    def __init__(self, transaction_cost: float = 0.0025, max_weight: float = 0.30, slippage: float = 0.0005):
         self.transaction_cost = transaction_cost
         self.max_weight = max_weight
+        self.slippage = slippage
 
     def clean_price_data(self, prices: pd.DataFrame) -> pd.DataFrame:
         min_obs = max(30, len(prices) // 10)
@@ -193,103 +203,142 @@ class PortfolioOptimizer:
         prices: pd.DataFrame,
         model: str = "max_sharpe",
         sentiment_scores: Optional[pd.Series] = None,
+        market_regime: str = "neutral",
+        turnover_cap: Optional[float] = None,
+        last_weights: Optional[pd.Series] = None,
+        base_max_weight: float = 0.30,
+        beta_sent: float = 0.10,
     ) -> Tuple[pd.Series, Dict]:
 
         try:
             clean_prices = self.clean_price_data(prices)
-            if len(clean_prices.columns) < 2:
+            assets = list(clean_prices.columns)
+            if len(assets) < 2:
                 return self._fallback_weights(prices.columns), {"method":"equal_weight","reason":"insufficient_assets"}
 
+            # Bounds adjust by regime
+            if market_regime == "risk_off":
+                max_w = min(0.20, base_max_weight)  # tighten
+            elif market_regime == "risk_on":
+                max_w = min(0.40, max(0.30, base_max_weight))  # loosen slightly
+            else:
+                max_w = base_max_weight
+
             mu = expected_returns.ema_historical_return(clean_prices, frequency=365)
-            if sentiment_scores is not None and not sentiment_scores.empty:
-                mu = self._adjust_returns_for_sentiment(mu, sentiment_scores)
             S = risk_models.CovarianceShrinkage(clean_prices).ledoit_wolf()
 
-            ef = EfficientFrontier(mu, S, weight_bounds=(0, self.max_weight))
-            ef.add_objective(L2_reg, gamma=0.01)
+            # Per-asset sentiment tilt of mu
+            if (sentiment_scores is not None) and (len(sentiment_scores) > 0):
+                aligned = sentiment_scores.reindex(mu.index).fillna(0.0)
+                tilt = np.clip(beta_sent * aligned, -0.2, 0.2)  # cap the tilt
+                mu = mu * (1.0 + tilt)
 
-            if model == "max_sharpe":
-                ef.max_sharpe()
-            elif model == "min_variance":
-                ef.min_volatility()
-            elif model == "max_quadratic_utility":
-                ef.max_quadratic_utility(risk_aversion=1.0)
+            # Classical models via PyPortfolioOpt
+            if model in {"max_sharpe", "min_variance", "max_qu"}:
+                ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
+                ef.add_objective(L2_reg, gamma=0.01)
+
+                if model == "max_sharpe":
+                    ef.max_sharpe()
+                elif model == "min_variance":
+                    ef.min_volatility()
+                else:
+                    ef.max_quadratic_utility(risk_aversion=1.0)
+
+                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                w = w / w.sum() if w.sum() > 0 else w
+
+            elif model == "erc":
+                w = self._erc_weights(S, max_w=max_w)
+
+            elif model == "equal_weight":
+                w = pd.Series(1.0/len(assets), index=assets, dtype=float)
+
             else:
-                raise ValueError(f"Unknown optimization model: {model}")
+                raise ValueError(f"Unknown model: {model}")
 
-            cleaned_weights = ef.clean_weights(cutoff=0.01)
-            weights_series = pd.Series(cleaned_weights, dtype=float)
+            # Optional turnover cap (L1 distance from last weights)
+            if turnover_cap is not None and last_weights is not None and len(last_weights) > 0:
+                w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
 
-            # Re-normalize to be fully invested
-            total = weights_series.sum()
-            if total > 0:
-                weights_series = weights_series / total
-
-            port_ret = float(weights_series.dot(mu))
-            port_vol = float(np.sqrt(weights_series.T @ S @ weights_series))
+            # Portfolio stats
+            port_ret = float(w.dot(mu))
+            port_vol = float(np.sqrt(w.T @ S @ w))
             sharpe = port_ret / port_vol if port_vol > 0 else 0.0
 
-            metadata = {
+            meta = {
                 "method": model,
                 "expected_return": port_ret,
                 "volatility": port_vol,
                 "sharpe_ratio": sharpe,
-                "n_assets": int((weights_series > 0).sum()),
+                "n_assets": int((w > 0).sum()),
+                "max_weight": max_w,
+                "market_regime": market_regime,
             }
-            return weights_series.reindex(prices.columns, fill_value=0.0), metadata
+            return w.reindex(prices.columns, fill_value=0.0), meta
 
-        except (OptimizationError, ValueError, cp.error.SolverError) as e:
+        except (OptimizationError, ValueError, cp.SolverError) as e:
             st.warning(f"Optimization failed: {e}")
             return self._fallback_weights(prices.columns), {"method":"equal_weight","reason":str(e)}
 
-    def _adjust_returns_for_sentiment(self, mu: pd.Series, scores: pd.Series) -> pd.Series:
-        common = mu.index.intersection(scores.index)
-        if len(common) == 0: return mu
-        out = mu.copy()
-        for a in common:
-            factor = np.clip(scores[a] * 0.1, -0.2, 0.2)
-            out[a] = out[a] * (1 + factor)
-        return out
+    def _erc_weights(self, cov: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
+        """Equal Risk Contribution using cvxpy."""
+        Sigma = cov.values
+        n = Sigma.shape[0]
+        w = cp.Variable(n)
+        # Risk contributions: RC_i = w_i * (Sigma w)_i
+        Sigma_w = Sigma @ w
+        RC = cp.multiply(w, Sigma_w)
+        target = (1.0 / n) * cp.quad_form(w, Sigma)  # proxy
+        # Minimize squared deviations of RC from equal contribution
+        obj = cp.Minimize(cp.sum_squares(RC - target))
+        constraints = [
+            w >= 0,
+            cp.sum(w) == 1,
+            w <= max_w
+        ]
+        prob = cp.Problem(obj, constraints)
+        prob.solve(solver=cp.SCS, verbose=False)
+        w_val = w.value
+        if w_val is None:
+            # fallback to equal weight
+            w_val = np.ones(n) / n
+        series = pd.Series(w_val, index=cov.columns, dtype=float)
+        # renorm for numerical safety
+        return series / series.sum()
+
+    def _apply_turnover_cap(self, w_prev: pd.Series, w_new: pd.Series, cap: float) -> pd.Series:
+        """Project w_new toward w_prev so that L1 turnover <= cap."""
+        diff = (w_new - w_prev).abs().sum()
+        if diff <= cap:
+            return w_new
+        # simple linear interpolation toward previous weights
+        alpha = cap / diff
+        w_adj = w_prev + alpha * (w_new - w_prev)
+        w_adj = w_adj.clip(lower=0.0)
+        return w_adj / w_adj.sum()
 
     def _fallback_weights(self, asset_names) -> pd.Series:
         return pd.Series(1.0 / max(1, len(asset_names)), index=asset_names, dtype=float)
-    # --- Portfolio Analysis Tab ---
 
-    def portfolio_recommendation_tab(strategy_returns: pd.Series):
-        st.header("📊 Recommended Portfolio")
-    
-        if strategy_returns.empty:
-            st.warning("No strategy return data available.")
-            return
-    
-        # Annualized stats
-        strat_ret_annual = strategy_returns.mean() * 252
-        strat_vol_annual = strategy_returns.std() * np.sqrt(252)
-        strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
-    
-        st.subheader("Suggested Allocation")
-        st.write("100% AlphaSent Strategy")
-    
-        st.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
-        st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
-        st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
-
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # Backtest
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 class BacktestEngine:
     def __init__(self, optimizer: PortfolioOptimizer, config: Config):
         self.optimizer = optimizer
         self.config = config
 
-    def run_backtest(self, prices_df: pd.DataFrame, sentiment_data: pd.DataFrame):
+    def run_backtest(self, prices_df: pd.DataFrame, sent_df: pd.DataFrame, model_choice: str, beta_sent: float) -> Tuple[pd.Series, pd.DataFrame, Dict]:
         st.info("🚀 Initiating Enhanced Backtest Engine...")
 
-        daily_returns = prices_df.pct_change().fillna(0)
+        assets = extract_asset_universe(prices_df)
+        px = prices_df[assets].dropna(how="all")
+        daily_returns = px.pct_change().fillna(0.0)
 
-
-        rebalance_dates = prices_df.resample("ME").last().index
-        rebalance_dates = [d for d in rebalance_dates if d in prices_df.index]
+        # Monthly end rebal dates present in index
+        rebalance_dates = px.resample("ME").last().index
+        rebalance_dates = [d for d in rebalance_dates if d in px.index]
         if len(rebalance_dates) < 3:
             st.error("Insufficient data for backtesting")
             return pd.Series(dtype=float), pd.DataFrame(), {}
@@ -299,8 +348,6 @@ class BacktestEngine:
         transaction_costs = []
         last_weights = pd.Series(dtype=float)
 
-        sentiment_z = self._calculate_sentiment_zscore(sentiment_data)
-
         progress = st.progress(0)
         status = st.empty()
 
@@ -308,34 +355,65 @@ class BacktestEngine:
             progress.progress((i + 1) / (len(rebalance_dates) - 1))
             status.text(f"Processing {cur.strftime('%Y-%m')}")
 
-            regime = self._get_regime(sentiment_z, cur)
+            # Determine regime via market sentiment z
+            z = get_market_sent_z(sent_df, cur, window=self.config.LOOKBACK_PERIOD)
+            if z > self.config.SENTIMENT_THRESHOLDS["risk_on"]:
+                regime = "risk_on"
+            elif z < self.config.SENTIMENT_THRESHOLDS["risk_off"]:
+                regime = "risk_off"
+            else:
+                regime = "neutral"
 
+            # Lookback window for optimization
             hist_start = cur - timedelta(days=self.config.LOOKBACK_PERIOD)
-            hist_prices = prices_df.loc[hist_start:cur].dropna(how="all")
+            hist_prices = px.loc[hist_start:cur].dropna(how="all")
             if len(hist_prices) < 30:
                 continue
 
-            target_w, meta = self._optimize_for_regime(hist_prices, regime, sentiment_z)
+            # Pull per-asset sentiment snapshot at cur
+            per_asset_sent = extract_per_asset_sentiment(sent_df, cur).reindex(assets).fillna(0.0)
 
+            # Choose model (allow override via UI)
+            model = model_choice
+            if model_choice == "auto":
+                model = {"risk_on": "max_sharpe", "risk_off": "min_variance", "neutral": "max_qu"}[regime]
+
+            target_w, meta = self.optimizer.get_optimized_weights(
+                hist_prices,
+                model=model,
+                sentiment_scores=per_asset_sent,
+                market_regime=regime,
+                turnover_cap=self.config.TURNOVER_CAP,
+                last_weights=last_weights,
+                base_max_weight=self.config.MAX_POSITION_SIZE,
+                beta_sent=beta_sent,
+            )
+
+            # Turnover & trading costs
             if not last_weights.empty:
                 turnover = (target_w - last_weights.reindex(target_w.index, fill_value=0)).abs().sum()
-                txn = turnover * self.config.TRANSACTION_COST / 2
+                txn = turnover * (self.config.TRANSACTION_COST + self.config.SLIPPAGE)
                 transaction_costs.append(float(txn))
             else:
                 transaction_costs.append(0.0)
 
-            period = self._calculate_period_returns(daily_returns, target_w, cur, nxt, transaction_costs[-1])
-            if not period.empty:
-                portfolio_returns.append(period)
+            # Realize period returns (apply txn cost on first day)
+            period_rets = daily_returns.loc[cur:nxt]
+            if not period_rets.empty:
+                p = (period_rets * target_w).sum(axis=1)
+                p.iloc[0] -= float(transaction_costs[-1])
+                portfolio_returns.append(p.astype(float))
 
             rec = target_w.to_dict()
-            rec.update({"date": cur, "regime": regime, **meta, "transaction_cost": transaction_costs[-1]})
+            rec.update({
+                "date": cur, "regime": regime, **meta, "transaction_cost": transaction_costs[-1],
+                "sent_mkt_z": z
+            })
             allocation_history.append(rec)
 
             last_weights = target_w
 
-        progress.empty()
-        status.empty()
+        progress.empty(); status.empty()
 
         if not portfolio_returns:
             st.error("No valid returns generated")
@@ -344,74 +422,23 @@ class BacktestEngine:
         strategy_returns = pd.concat(portfolio_returns).astype(float)
         allocation_df = pd.DataFrame(allocation_history)
 
-        metrics = self._calculate_performance_metrics(strategy_returns, prices_df, transaction_costs)
+        metrics = self._calculate_performance_metrics(strategy_returns, px, transaction_costs)
 
         st.success("✅ Backtest completed successfully!")
         return strategy_returns, allocation_df, metrics
 
-    def _calculate_sentiment_zscore(self, sentiment_data: pd.DataFrame, window: int = 90) -> pd.Series:
-        if "compound" not in sentiment_data.columns:
-            return pd.Series(dtype=float)
-        s = sentiment_data["compound"].fillna(0.0)
-        mean = s.rolling(window=window, min_periods=30).mean()
-        std = s.rolling(window=window, min_periods=30).std().replace(0, np.nan)
-        return ((s - mean) / std).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-    def _get_regime(self, z: pd.Series, date) -> str:
-        if z.empty: return "neutral"
-        recent = z.loc[z.index <= date]
-        if recent.empty: return "neutral"
-        x = float(recent.iloc[-1])
-        if x > self.config.SENTIMENT_THRESHOLDS["risk_on"]: return "risk_on"
-        if x < self.config.SENTIMENT_THRESHOLDS["risk_off"]: return "risk_off"
-        return "neutral"
-
-    def _optimize_for_regime(self, prices: pd.DataFrame, regime: str, _z: pd.Series):
-        if regime == "risk_on":
-            w, meta = self.optimizer.get_optimized_weights(prices, model="max_sharpe")
-        elif regime == "risk_off":
-            w, meta = self.optimizer.get_optimized_weights(prices, model="min_variance")
-        else:
-            w, meta = self.optimizer.get_optimized_weights(prices, model="max_quadratic_utility")
-        meta["regime"] = regime
-        return w, meta
-
-    def _calculate_period_returns(self, daily_returns, weights, start_date, end_date, txn_cost):
-        period_returns = daily_returns.loc[start_date:end_date]
-        if period_returns.empty:
-            return pd.Series(dtype=float)
-
-        common = weights.index.intersection(period_returns.columns)
-        w = weights.reindex(common, fill_value=0.0).astype(float)
-        r = period_returns[common].astype(float)
-        r = r.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-
-        p = (r * w).sum(axis=1)
-        if not p.empty:
-            p.iloc[0] -= float(txn_cost)
-        return p.astype(float)
-
     def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
         if returns.empty: return {}
-
         r = pd.to_numeric(returns, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
         if r.empty: return {}
-
         n = len(r)
-        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-        cum = np.prod(1.0 + returns.values)
-        annualized_return = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
-        annualized_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
-
-        ann_ret = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
-                
+        cum = np.prod(1.0 + r.values)
+        ann_ret = cum ** (365.0 / len(r)) - 1.0 if cum > 0 else 0.0
         ann_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
-        sharpe = (annualized_return / annualized_vol) if (annualized_vol > 0 and np.isfinite(annualized_return)) else 0.0
-
+        sharpe = (ann_ret / ann_vol) if (ann_vol > 0 and np.isfinite(ann_ret)) else 0.0
 
         cum_curve = (1 + r).cumprod()
-        roll_max = cum_curve.cummax()
-        drawdown = (cum_curve - roll_max) / roll_max
+        drawdown = (cum_curve - cum_curve.cummax()) / cum_curve.cummax()
         max_dd = float(drawdown.min())
 
         downside = r[r < 0]
@@ -453,9 +480,9 @@ class BacktestEngine:
             **bench,
         }
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # Charts
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
     fig = make_subplots(
         rows=2, cols=2,
@@ -464,7 +491,6 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
                [{"secondary_y": False}, {"secondary_y": False}]],
         vertical_spacing=0.12,
     )
-
     strat_cum = (1 + strategy_returns).cumprod()
     fig.add_trace(go.Scatter(x=strat_cum.index, y=strat_cum.values, name="AlphaSent Strategy", line=dict(width=3)), row=1, col=1)
 
@@ -480,25 +506,18 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
     dd = (strat_cum - rolling_max) / rolling_max * 100.0
     fig.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown %", fill="tozeroy"), row=2, col=1)
 
-    # Monthly heatmap (clean labels)
     monthly = strategy_returns.resample("M").apply(lambda x: (1 + x).prod() - 1)
     heat = monthly.to_frame("ret")
-    heat["Year"] = heat.index.year.astype(str)  # Convert to string for categorical axis
+    heat["Year"] = heat.index.year.astype(str)
     heat["Month"] = heat.index.strftime("%b")
-    
-    # Ensure months are ordered
-    order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    
-    # Pivot table
+    order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun","Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     pivot = heat.pivot(index="Year", columns="Month", values="ret").reindex(columns=order)
-    
     if not pivot.empty:
         fig.add_trace(
             go.Heatmap(
                 z=pivot.values * 100.0,
                 x=pivot.columns,
-                y=pivot.index,  # Strings now → categorical axis
+                y=pivot.index,
                 colorscale="RdYlGn",
                 colorbar_title="%",
                 hovertemplate="%{y} %{x}: %{z:.2f}%<extra></extra>",
@@ -506,19 +525,18 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
             ),
             row=2, col=2,
         )
-
-
     fig.update_yaxes(title_text="Cumulative Return", row=1, col=1)
     fig.update_yaxes(title_text="Sharpe", row=1, col=2)
     fig.update_yaxes(title_text="Drawdown %", row=2, col=1)
     fig.update_layout(height=800, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
-def sentiment_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
-    if "compound" not in sentiment_data.columns:
+def sentiment_chart(sent_df: pd.DataFrame, strategy_returns: pd.Series):
+    if "compound_mkt" not in sent_df.columns:
         return go.Figure()
-    fig = make_subplots(rows=2, cols=1, subplot_titles=("Market Sentiment Z-Score", "Sentiment vs Strategy"), vertical_spacing=0.12, specs=[[{}],[{"secondary_y":True}]])
-    s = sentiment_data["compound"].fillna(0.0)
+    fig = make_subplots(rows=2, cols=1, subplot_titles=("Market Sentiment Z-Score", "Sentiment vs Strategy"),
+                        vertical_spacing=0.12, specs=[[{}],[{"secondary_y":True}]])
+    s = sent_df["compound_mkt"].fillna(0.0)
     z = (s - s.rolling(90).mean()) / s.rolling(90).std()
     z = z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     fig.add_trace(go.Scatter(x=z.index, y=z.values, name="Sentiment Z"), row=1, col=1)
@@ -534,16 +552,15 @@ def sentiment_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     fig.update_layout(height=600)
     return fig
 
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 # AI Summary
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
 def generate_ai_summary(perf: Dict, latest_sentiment: float, latest_weights: pd.Series, regime_history: pd.DataFrame) -> str:
     if not Config.OPENROUTER_API_KEY:
         return "⚠️ Add your OpenRouter API key in `st.secrets` to enable AI insights."
-
     try:
         client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=Config.OPENROUTER_API_KEY)
-        top = latest_weights.nlargest(5)
+        top = latest_weights.nlargest(5) if not latest_weights.empty else pd.Series(dtype=float)
         reg_stats = regime_history["regime"].value_counts() if not regime_history.empty else pd.Series(dtype=float)
         prompt = f"""
 Act as a quantitative crypto PM. Analyze this backtest:
@@ -555,7 +572,7 @@ Volatility: {perf.get('annualized_volatility', 0):.2%}
 Excess vs BTC: {perf.get('excess_return', 0):.2%}
 Excess Sharpe vs BTC: {perf.get('excess_sharpe', 0):.2f}
 
-Latest Sentiment Z: {latest_sentiment:.2f}
+Latest Market Sentiment Z: {latest_sentiment:.2f}
 Top 5 holdings: {top.to_dict()}
 Regime distribution: {reg_stats.to_dict()}
 
@@ -570,52 +587,24 @@ Provide: (1) executive summary, (2) effect of sentiment, (3) risk, (4) positioni
     except Exception as e:
         return f"❌ AI analysis failed: {e}"
 
-# ------------------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------#
+# Main app
+# ------------------------------------------------------------------------------#
 def fmt_pct(x):
     return "—" if (x is None or not np.isfinite(x)) else f"{x:.1%}"
 
 def fmt_num(x, digs=2):
     return "—" if (x is None or not np.isfinite(x)) else f"{x:.{digs}f}"
 
-# --------------------------------------------------------------------
-# Helper functions
-# --------------------------------------------------------------------
-
-def portfolio_recommendation_tab(strategy_returns: pd.Series):
-    st.header("📊 Recommended Portfolio")
-
-    if strategy_returns.empty:
-        st.warning("No strategy return data available.")
-        return
-
-    # Annualized stats
-    strat_ret_annual = strategy_returns.mean() * 252
-    strat_vol_annual = strategy_returns.std() * np.sqrt(252)
-    strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
-
-    st.subheader("Suggested Allocation")
-    st.write("100% AlphaSent Strategy")
-
-    st.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
-    st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
-    st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
-
-# --------------------------------------------------------------------
-# Main app
-# --------------------------------------------------------------------
-
 def main():
     if not setup_nltk():
         st.stop()
 
     config = Config()
-    session = create_requests_session()
-    optimizer = PortfolioOptimizer(max_weight=config.MAX_POSITION_SIZE, transaction_cost=config.TRANSACTION_COST)
+    optimizer = PortfolioOptimizer(max_weight=config.MAX_POSITION_SIZE, transaction_cost=config.TRANSACTION_COST, slippage=config.SLIPPAGE)
     engine = BacktestEngine(optimizer, config)
 
-    # Sidebar
+    # Sidebar controls
     with st.sidebar:
         st.subheader("🎛️ Control Center")
         col1, col2 = st.columns(2)
@@ -624,14 +613,27 @@ def main():
         st.divider()
 
         st.markdown("**Strategy Parameters**")
-        t = st.slider("Sentiment Threshold", -2.0, 2.0, config.SENTIMENT_THRESHOLDS["risk_on"], 0.1)
+        t = st.slider("Sentiment Z Threshold (abs)", 0.5, 2.0, 1.0, 0.1)
         config.SENTIMENT_THRESHOLDS["risk_on"] = t
         config.SENTIMENT_THRESHOLDS["risk_off"] = -t
-        config.MAX_POSITION_SIZE = st.slider("Max Position Size", 0.1, 0.5, config.MAX_POSITION_SIZE, 0.05)
-        config.LOOKBACK_PERIOD = st.slider("Lookback (days)", 30, 180, config.LOOKBACK_PERIOD, 10)
+
+        config.MAX_POSITION_SIZE = st.slider("Max Position Size", 0.10, 0.50, config.MAX_POSITION_SIZE, 0.05)
+        config.LOOKBACK_PERIOD = st.slider("Lookback Window (days)", 30, 180, config.LOOKBACK_PERIOD, 10)
+        config.TURNOVER_CAP = st.slider("Turnover Cap per Rebalance (L1)", 0.10, 1.00, config.TURNOVER_CAP, 0.05)
+        beta_sent = st.slider("Per-Asset Sentiment Tilt (β)", 0.0, 0.25, Config.SENTIMENT_TILT, 0.01)
+
+        model_choice = st.selectbox("Optimization Model",
+            options=[("Auto (regime-based)", "auto"),
+                     ("Max Sharpe", "max_sharpe"),
+                     ("Min Variance", "min_variance"),
+                     ("Max Quadratic Utility", "max_qu"),
+                     ("Equal Risk Contribution (ERC)", "erc"),
+                     ("Equal Weight", "equal_weight")],
+            format_func=lambda x: x[0]
+        )[1]
         st.divider()
 
-        st.markdown("**📰 Live News**")
+        st.markdown("**📰 Live News (titles only)**")
         news = fetch_live_news(config.CRYPTOCOMPARE_API_KEY)
         if not news.empty:
             for _, row in news.head(5).iterrows():
@@ -648,11 +650,9 @@ def main():
             st.info("News unavailable")
 
     st.divider()
-
     center = st.container()
     with center:
-        run = st.button("🚀 Run Enhanced Portfolio Recommendations and Backtest", type="primary", use_container_width=True)
-
+        run = st.button("🚀 Run Sentiment-Enhanced Backtest", type="primary", use_container_width=True)
     if not run:
         st.stop()
 
@@ -661,75 +661,62 @@ def main():
         st.error("Failed to load data.")
         st.stop()
 
-    prices_df = data.drop(columns=["compound"], errors="ignore")
-    sentiment_df = data[["compound"]].dropna()
-    if sentiment_df.empty:
-        st.error("No sentiment data available.")
+    # Split prices vs sentiment
+    price_cols = [c for c in data.columns if c.isupper()]
+    if not price_cols:
+        st.error("No price columns detected.")
         st.stop()
+    prices_df = data[price_cols]
+
+    sent_cols = [c for c in data.columns if c == "compound_mkt" or c.startswith("sent_")]
+    if not sent_cols:
+        st.error("No sentiment columns found (expected 'compound_mkt' and 'sent_<SYMBOL>').")
+        st.stop()
+    sentiment_df = data[sent_cols].dropna(how="all")
 
     with st.spinner("Running backtest..."):
-        strategy_returns, allocation_history, metrics = engine.run_backtest(prices_df, sentiment_df)
+        strategy_returns, allocation_history, metrics = engine.run_backtest(prices_df, sentiment_df, model_choice=model_choice, beta_sent=beta_sent)
 
     if strategy_returns.empty:
         st.error("Backtest failed.")
         st.stop()
-    # Show Portfolio Recommendation before dashboards
-    st.header("📊 Recommended Portfolio")
-    
-    if strategy_returns.empty:
-        st.warning("Run the backtest to generate portfolio stats.")
-    else:
-        # Annualized stats
-        strat_ret_annual = strategy_returns.mean() * 252
-        strat_vol_annual = strategy_returns.std() * np.sqrt(252)
-        strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
-    
-        st.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
-        st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
-        st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
-    
-        # Show latest allocation
-    if not allocation_history.empty:
-        
-        st.subheader("Current Asset Allocation")
 
-        # Columns that are NOT assets
-        exclude_cols = {
-            "date", "regime", "transaction_cost", "method",
-            "expected_return", "volatility", "sharpe_ratio", "n_assets"
-        }
-    
-        latest_alloc = allocation_history.iloc[-1].drop(labels=exclude_cols, errors="ignore")
-        latest_alloc = latest_alloc[latest_alloc > 0] * 100  # Convert to %
-    
+    # ======== Summary KPIs ======== #
+    st.header("📊 Recommended Portfolio")
+    strat_ret_annual = strategy_returns.mean() * 252
+    strat_vol_annual = strategy_returns.std() * np.sqrt(252)
+    strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
+    c2.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
+    c3.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
+
+    alloc_df = allocation_history.copy()
+    if not alloc_df.empty:
+        st.subheader("Current Asset Allocation")
+        exclude = {"date","regime","transaction_cost","method","expected_return","volatility","sharpe_ratio","n_assets","max_weight","market_regime","sent_mkt_z"}
+        latest_alloc = alloc_df.iloc[-1].drop(labels=exclude, errors="ignore")
+        latest_alloc = pd.to_numeric(latest_alloc, errors="coerce").fillna(0.0)
+        latest_alloc = latest_alloc[latest_alloc > 0] * 100
         if not latest_alloc.empty:
-            fig = px.pie(
-                values=latest_alloc.values,
-                names=latest_alloc.index,
-                title="Portfolio Allocation (%)",
-                hole=0.3
-            )
+            fig = px.pie(values=latest_alloc.values, names=latest_alloc.index, title="Portfolio Allocation (%)", hole=0.3)
             fig.update_traces(textposition="inside", textinfo="percent+label")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No active positions in the latest allocation.")
 
-    
-    st.subheader("Back Test Performance Dashboard") 
+    st.subheader("Back Test Performance Dashboard")
 
-
-    # Tabs
+    # ======== Tabs ======== #
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
 
     with tab1:
         st.subheader("Performance Dashboard")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Annual Return", fmt_pct(metrics.get("annualized_return")))
-        c2.metric("Sharpe Ratio", fmt_num(metrics.get("sharpe_ratio")))
-        c3.metric("Max Drawdown", fmt_pct(metrics.get("max_drawdown")))
-        c4.metric("Volatility", fmt_pct(metrics.get("annualized_volatility")))
-
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Annual Return", fmt_pct(metrics.get("annualized_return")))
+        k2.metric("Sharpe Ratio", fmt_num(metrics.get("sharpe_ratio")))
+        k3.metric("Max Drawdown", fmt_pct(metrics.get("max_drawdown")))
+        k4.metric("Volatility", fmt_pct(metrics.get("annualized_volatility")))
         st.plotly_chart(performance_dashboard(strategy_returns, prices_df), use_container_width=True)
 
         st.markdown("##### Detailed Metrics")
@@ -742,7 +729,7 @@ def main():
                 ["Sharpe Ratio", fmt_num(metrics.get("sharpe_ratio"), 3)],
                 ["Sortino Ratio", fmt_num(metrics.get("sortino_ratio"), 3)],
                 ["Maximum Drawdown", fmt_pct(metrics.get("max_drawdown"))],
-                ["Total Transaction Costs", fmt_pct(metrics.get("total_transaction_costs"))],
+                ["Avg Annual Transaction Cost", fmt_pct(metrics.get("avg_annual_transaction_cost"))],
             ],
             columns=["Metric", "Value"],
         )
@@ -763,17 +750,10 @@ def main():
 
     with tab2:
         st.subheader("Asset Allocation")
-
-        if allocation_history.empty:
-            st.info("No allocation history.")
-        else:
-            latest = pd.Series(allocation_history.iloc[-1])
-            non_meta = {"date","regime","transaction_cost","method","expected_return","volatility","sharpe_ratio","n_assets"}
-            weights = (
-                latest[~latest.index.isin(non_meta)]
-                .apply(pd.to_numeric, errors="coerce")
-                .dropna()
-            )
+        if not alloc_df.empty:
+            latest = pd.Series(alloc_df.iloc[-1])
+            non_meta = {"date","regime","transaction_cost","method","expected_return","volatility","sharpe_ratio","n_assets","max_weight","market_regime","sent_mkt_z"}
+            weights = latest[~latest.index.isin(non_meta)].apply(pd.to_numeric, errors="coerce").dropna()
             weights = weights[weights > 0.01].sort_values(ascending=False)
 
             colA, colB = st.columns(2)
@@ -797,59 +777,49 @@ def main():
                     )
 
             st.markdown("**Portfolio Evolution Over Time**")
-            alloc_df = pd.DataFrame(allocation_history)
-            alloc_df["date"] = pd.to_datetime(alloc_df["date"])
-            alloc_df = alloc_df.set_index("date")
-
-            asset_cols = [c for c in alloc_df.columns if c not in non_meta]
+            df = alloc_df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+            asset_cols = [c for c in df.columns if c not in non_meta]
             for c in asset_cols:
-                alloc_df[c] = pd.to_numeric(alloc_df[c], errors="coerce").fillna(0.0)
-
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
             if asset_cols:
-                means = alloc_df[asset_cols].mean().nlargest(5).index
+                means = df[asset_cols].mean().nlargest(5).index
                 area = go.Figure()
                 for a in means:
-                    area.add_trace(go.Scatter(x=alloc_df.index, y=alloc_df[a]*100, mode="lines", stackgroup="one", name=a))
+                    area.add_trace(go.Scatter(x=df.index, y=df[a]*100, mode="lines", stackgroup="one", name=a))
                 area.update_layout(yaxis_title="Allocation %", height=420, legend=dict(orientation="h"))
                 st.plotly_chart(area, use_container_width=True)
 
             st.markdown("**Regime Analysis**")
-            if "regime" in alloc_df.columns:
-                counts = alloc_df["regime"].value_counts()
+            if "regime" in df.columns:
+                counts = df["regime"].value_counts()
                 if not counts.empty:
-                    st.plotly_chart(px.pie(values=counts.values, names=counts.index, title="Time in Each Regime",
-                                           color_discrete_map={"risk_on":"#22c55e","neutral":"#f59e0b","risk_off":"#ef4444"}),
+                    st.plotly_chart(px.pie(values=counts.values, names=counts.index, title="Time in Each Regime"),
                                     use_container_width=True)
 
     with tab3:
         st.subheader("Sentiment")
-        latest_sent = sentiment_df["compound"].tail(7).mean()
-        zscore = ((sentiment_df["compound"] - sentiment_df["compound"].rolling(90).mean()) /
-                  sentiment_df["compound"].rolling(90).std()).replace([np.inf, -np.inf], np.nan).iloc[-1]
-        zscore = float(zscore) if np.isfinite(zscore) else 0.0
-
+        if "compound_mkt" in sentiment_df.columns:
+            latest_sent = sentiment_df["compound_mkt"].tail(7).mean()
+            zscore = get_market_sent_z(sentiment_df, sentiment_df.index.max(), window=config.LOOKBACK_PERIOD)
+        else:
+            latest_sent, zscore = 0.0, 0.0
         c1, c2, c3 = st.columns(3)
-        c1.metric("Current Sentiment", f"{latest_sent:.2f}", help=get_sentiment_label(latest_sent))
+        c1.metric("Current Market Sentiment", f"{latest_sent:.2f}", help=get_sentiment_label(latest_sent))
         c2.metric("Sentiment Z-Score", f"{zscore:.2f}")
         regime_now = "Risk-On" if zscore > config.SENTIMENT_THRESHOLDS["risk_on"] else "Risk-Off" if zscore < config.SENTIMENT_THRESHOLDS["risk_off"] else "Neutral"
         c3.metric("Current Regime", regime_now)
-
         st.plotly_chart(sentiment_chart(sentiment_df, strategy_returns), use_container_width=True)
 
-        stats = pd.DataFrame({
-            "Metric":[
-                "Mean Sentiment","Sentiment Volatility","Positive Days %","Negative Days %","Extreme Sentiment Days %","Current 30-Day Trend"
-            ],
-            "Value":[
-                f"{sentiment_df['compound'].mean():.3f}",
-                f"{sentiment_df['compound'].std():.3f}",
-                f"{(sentiment_df['compound'] > 0.1).mean():.1%}",
-                f"{(sentiment_df['compound'] < -0.1).mean():.1%}",
-                f"{(abs(sentiment_df['compound']) > 0.5).mean():.1%}",
-                f"{sentiment_df['compound'].tail(30).mean():.3f}",
-            ],
-        })
-        st.dataframe(stats, hide_index=True, use_container_width=True)
+        # Per-asset snapshot table if present
+        snap = sentiment_df[[c for c in sentiment_df.columns if c.startswith("sent_")]].tail(1)
+        if not snap.empty:
+            out = snap.T.reset_index()
+            out.columns = ["AssetSentCol", "Score"]
+            out["Asset"] = out["AssetSentCol"].str.replace("sent_", "", regex=False)
+            out = out[["Asset", "Score"]].sort_values("Score", ascending=False)
+            st.dataframe(out, hide_index=True, use_container_width=True)
 
     with tab4:
         st.subheader("🤖 AI-Powered Analysis")
@@ -859,7 +829,13 @@ def main():
         except Exception:
             regime_df = pd.DataFrame(columns=["date","regime"])
 
-        ai_text = generate_ai_summary(metrics, zscore, weights if "weights" in locals() else pd.Series(dtype=float), regime_df)
+        latest_weights = pd.Series(dtype=float)
+        if not allocation_history.empty:
+            last = pd.Series(allocation_history.iloc[-1])
+            exclude = {"date","regime","transaction_cost","method","expected_return","volatility","sharpe_ratio","n_assets","max_weight","market_regime","sent_mkt_z"}
+            latest_weights = last[~last.index.isin(exclude)].apply(pd.to_numeric, errors="coerce").dropna()
+
+        ai_text = generate_ai_summary(metrics, zscore, latest_weights, regime_df)
         st.markdown(ai_text)
 
         st.divider()
@@ -880,6 +856,5 @@ def main():
         elif q:
             st.info("Add your OpenRouter API key to enable AI Q&A.")
 
-# ------------------------------------------------------------------------------
 if __name__ == "__main__":
     main()
