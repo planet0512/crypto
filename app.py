@@ -156,7 +156,7 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
     3.  **Recommended Allocation:** Describe the portfolio's current positioning.
     """
     try:
-        completion = client.chat.completions.create(model="google/gemini-1.5-flash-latest", messages=[{"role": "user", "content": prompt}])
+        completion = client.chat.completions.create(model="google/gemini-2.5-flash", messages=[{"role": "user", "content": prompt}])
         return completion.choices[0].message.content
     except Exception as e:
         return f"Could not generate Gemini summary. Error: {e}"
