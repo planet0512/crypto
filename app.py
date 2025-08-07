@@ -126,47 +126,73 @@ def get_portfolio_weights(prices, model="mvo"):
     except Exception: return pd.Series({ticker: 1/len(prices.columns) for ticker in prices.columns})
 
 def run_backtest(prices_df, sentiment_index):
-    # ... [Function is unchanged]
+    """
+    Runs the sentiment-regime backtest with detailed debugging print statements.
+    """
     st.write("Running Sentiment-Regime Backtest...")
+    if prices_df.empty or sentiment_index.empty:
+        st.warning("Cannot run backtest due to empty price or sentiment data.")
+        return None, None
+        
     daily_returns = prices_df.pct_change()
     rebalance_dates = prices_df.resample('ME').last().index
-    portfolio_returns, last_weights = [], pd.Series()
+    portfolio_returns = []
+    last_weights = pd.Series()
     sentiment_zscore = (sentiment_index['compound'] - sentiment_index['compound'].rolling(90).mean()) / sentiment_index['compound'].rolling(90).std()
+    
+    # --- DEBUGGING ---
+    print(f"Backtest will attempt to run for {len(rebalance_dates)} rebalance dates.")
     
     for i in range(len(rebalance_dates) - 1):
         start_date, end_date = rebalance_dates[i], rebalance_dates[i+1]
+        
+        # --- DEBUGGING ---
+        print(f"\n--- Processing Rebalance Date: {start_date.date()} ---")
+        
+        # 1. Check for sentiment data
         sentiment_slice = sentiment_zscore.loc[:start_date].dropna()
-        if sentiment_slice.empty: continue
+        print(f"  Sentiment data points available up to this date: {len(sentiment_slice)}")
+        if sentiment_slice.empty:
+            print("  ! SKIPPING: Not enough sentiment history to calculate a signal.")
+            continue
+            
         sentiment_signal = sentiment_slice.iloc[-1]
-        if pd.isna(sentiment_signal): sentiment_signal = 0
-        mvo_weight, min_var_weight = (0.8, 0.2) if sentiment_signal > 1.0 else (0.2, 0.8)
+        if pd.isna(sentiment_signal):
+            sentiment_signal = 0
+        print(f"  ✓ Sentiment signal is {sentiment_signal:.2f}")
+
+        # 2. Check for sufficient price history
         hist_prices = prices_df.loc[:start_date].tail(90)
-        if hist_prices.shape[0] < 90: continue
+        print(f"  Price data points available for model training: {hist_prices.shape[0]} (needs 90)")
+        if hist_prices.shape[0] < 90:
+            print("  ! SKIPPING: Not enough historical price data for optimization models.")
+            continue
+
+        # If we get here, all checks passed for this date
+        print("  ✓ All data checks passed. Proceeding with portfolio construction.")
+        mvo_weight, min_var_weight = (0.8, 0.2) if sentiment_signal > 1.0 else (0.2, 0.8)
         
         mvo_weights = get_portfolio_weights(hist_prices, model="mvo")
         min_var_weights = get_portfolio_weights(hist_prices, model="min_var")
         target_weights = (mvo_weight * mvo_weights + min_var_weight * min_var_weights).fillna(0)
+        
         turnover = (target_weights - last_weights.reindex(target_weights.index).fillna(0)).abs().sum() / 2
         costs = turnover * (25 / 10000)
+        
         period_returns = (daily_returns.loc[start_date:end_date] * target_weights).sum(axis=1)
-        if not period_returns.empty: period_returns.iloc[0] -= costs
+        if not period_returns.empty:
+            period_returns.iloc[0] -= costs
+        
         portfolio_returns.append(period_returns)
         last_weights = target_weights
 
-    if not portfolio_returns: return None, None
+    if not portfolio_returns: 
+        print("\n! DEBUG: The portfolio_returns list is empty. All rebalance periods were skipped.")
+        return None, None
+        
     strategy_returns = pd.concat(portfolio_returns)
-    st.write("✓ Backtest complete."); return strategy_returns, last_weights
-    
-def generate_gemini_summary(results, latest_sentiment, latest_weights):
-    # ... [Function is unchanged]
-    if not OPENROUTER_API_KEY: return "Please add your OpenRouter API Key to Streamlit secrets."
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
-    prompt_content = f"""...""" # Prompt here
-    try:
-        completion = client.chat.completions.create(model="google/gemini-1.5-flash-latest", messages=[{"role": "user", "content": prompt_content}])
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"Could not generate Gemini summary. Error: {e}"
+    st.write("✓ Backtest complete.")
+    return strategy_returns, last_weights
 
 # ==============================================================================
 # MAIN APP LOGIC (Station 4)
