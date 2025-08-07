@@ -161,7 +161,12 @@ def get_portfolio_weights(prices, model="mvo"):
     except Exception: return pd.Series({ticker: 1/len(prices.columns) for ticker in prices.columns})
 
 def run_backtest(prices_df, sentiment_index):
+    """Runs the sentiment-regime backtest with a final bug fix for date alignment."""
     st.write("Running Sentiment-Regime Backtest...")
+    if prices_df.empty or sentiment_index.empty:
+        st.warning("Cannot run backtest due to empty price or sentiment data.")
+        return None, None
+        
     daily_returns = prices_df.pct_change()
     rebalance_dates = prices_df.resample('ME').last().index
     portfolio_returns = []
@@ -171,8 +176,15 @@ def run_backtest(prices_df, sentiment_index):
     for i in range(len(rebalance_dates) - 1):
         start_date, end_date = rebalance_dates[i], rebalance_dates[i+1]
         
-        sentiment_slice = sentiment_zscore.loc[:start_date]
-        if sentiment_slice.empty: continue
+        # --- FINAL FIX for IndexError ---
+        # 1. Select the sentiment data available up to the rebalance date
+        sentiment_slice = sentiment_zscore.loc[:start_date].dropna()
+        
+        # 2. Check if the resulting slice is empty. If so, skip this period.
+        if sentiment_slice.empty:
+            continue # Not enough sentiment history yet, wait for the next rebalance period
+            
+        # 3. If data exists, safely get the last available signal
         sentiment_signal = sentiment_slice.iloc[-1]
         if pd.isna(sentiment_signal): sentiment_signal = 0
 
@@ -188,7 +200,10 @@ def run_backtest(prices_df, sentiment_index):
         costs = turnover * (25 / 10000)
         
         period_returns = (daily_returns.loc[start_date:end_date] * target_weights).sum(axis=1)
-        period_returns.iloc[0] -= costs
+        # Apply cost on the first day of the period, checking if index is not empty
+        if not period_returns.empty:
+            period_returns.iloc[0] -= costs
+        
         portfolio_returns.append(period_returns)
         last_weights = target_weights
 
