@@ -370,7 +370,9 @@ class BacktestEngine:
         cum = np.prod(1.0 + returns.values)
         annualized_return = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
         annualized_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
-        
+
+        ann_ret = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
+                
         ann_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
         sharpe = (annualized_return / annualized_vol) if (annualized_vol > 0 and np.isfinite(annualized_return)) else 0.0
 
