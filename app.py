@@ -548,8 +548,7 @@ class BacktestEngine:
             portfolio_returns.iloc[0] -= txn_cost
         
         return portfolio_returns
-    
-     def _calculate_performance_metrics(
+    def _calculate_performance_metrics(
         self,
         returns: pd.Series,
         prices_df: pd.DataFrame,
