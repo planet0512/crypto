@@ -700,10 +700,8 @@ def main():
 
 
     # Tabs
-    tab0, tab1, tab2, tab3, tab4 = st.tabs(["Portfolio Analysis","📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
 
-    with tab0:
-        portfolio_recommendation_tab(strategy_returns)
     with tab1:
         st.subheader("Performance Dashboard")
 
