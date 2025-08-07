@@ -30,56 +30,6 @@ OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 CRYPTOCOMPARE_API_KEY = st.secrets.get("CRYPTOCOMPARE_API_KEY", "")
 DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
 
-@st.cache_resource
-def setup_nltk():
-    import nltk; nltk.download('vader_lexicon', quiet=True)
-setup_nltk()
-
-# ==============================================================================
-# BACKEND HELPER & PIPELINE FUNCTIONS (Stations 1, 2, 3)
-# ==============================================================================
-
-@st.cache_data
-def create_requests_session() -> requests.Session:
-    """Creates a requests session with a retry policy for network robustness."""
-    session = requests.Session()
-    retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("http://", adapter); session.mount("https://", adapter)
-    session.headers.update({"User-Agent": "Mozilla/5.0"})
-    return session
-
-@st.cache_data
-def load_data(url):
-    """Loads the pre-processed backtest data from the GitHub CSV."""
-    st.write(f"Loading historical backtest data from GitHub...")
-    try:
-        df = pd.read_csv(url, index_col=0, parse_dates=True)
-        df.index.name = 'time'
-        st.write("✓ Backtest data loaded successfully.")
-        return df
-    except Exception as e:
-        st.error(f"Error loading data: {e}"); return pd.DataFrame()
-
-@st.cache_data
-def fetch_and_analyze_live_news(_session, api_key):
-    """Fetches the latest news from CryptoCompare and analyzes its sentiment for display."""
-    st.sidebar.write("Fetching live news...")
-    if not api_key:
-        st.sidebar.warning("CryptoCompare API Key not found in secrets.")
-        return pd.DataFrame()
-    
-    url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
-    try:
-        data = _session.get(url).json().get('Data', [])
-        if not data: return pd.DataFrame()
-        df = pd.DataFrame(data).head(10)
-        analyzer = SentimentIntensityAnalyzer()
-        df['compound'] = df['title'].fillna('').apply(lambda txt: analyzer.polarity_scores(txt)['compound'])
-        return df[['title', 'source', 'compound', 'url']]
-    except Exception:
-        return pd.DataFrame()
-
 def run_backtest(prices_df, sentiment_index):
     """
     Runs the sentiment-regime backtest using a direct momentum ranking strategy.
@@ -179,3 +129,5 @@ if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
             st.error("Could not complete the backtest. The data time range may be too short or there was an issue during processing.")
 else:
     st.info("Click the button to run the backtest on the pre-processed historical data.")
+
+
