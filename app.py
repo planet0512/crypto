@@ -1,3 +1,30 @@
+@st.cache_data(ttl=900)
+def fetch_live_news(api_key: str) -> pd.DataFrame:
+    """Fetch and analyze live crypto news. Safe for cache_data (no unhashables)."""
+    if not api_key:
+        return pd.DataFrame()
+
+    session = create_requests_session()  # this is cache_resource'd
+    url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
+
+    try:
+        r = session.get(url, timeout=30)
+        r.raise_for_status()
+        data = r.json().get("Data", [])
+        if not data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data).head(20)
+
+        # Sentiment
+        analyzer = SentimentIntensityAnalyzer()
+        df["compound"] = df["title"].fillna("").apply(lambda t: analyzer.polarity_scores(t)["compound"])
+        df["sentiment_label"] = df["compound"].apply(get_sentiment_label)
+        df["impact_score"] = df["compound"].abs()
+
+        return df[["title", "source", "compound", "sentiment_label", "impact_score", "url"]]
+    except Exception:
+        return pd.DataFrame()
 # streamlit run app.py
 
 import streamlit as st
@@ -105,32 +132,32 @@ def load_data(url: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=900)
 
-def fetch_live_news(session: requests.Session, api_key: str) -> pd.DataFrame:
-    session = create_requests_session() 
+def fetch_live_news(api_key: str) -> pd.DataFrame:
+    """Fetch and analyze live crypto news. Safe for cache_data (no unhashables)."""
     if not api_key:
         return pd.DataFrame()
+
+    session = create_requests_session()  # this is cache_resource'd
     url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
+
     try:
         r = session.get(url, timeout=30)
         r.raise_for_status()
         data = r.json().get("Data", [])
         if not data:
             return pd.DataFrame()
+
         df = pd.DataFrame(data).head(20)
+
+        # Sentiment
         analyzer = SentimentIntensityAnalyzer()
         df["compound"] = df["title"].fillna("").apply(lambda t: analyzer.polarity_scores(t)["compound"])
         df["sentiment_label"] = df["compound"].apply(get_sentiment_label)
         df["impact_score"] = df["compound"].abs()
+
         return df[["title", "source", "compound", "sentiment_label", "impact_score", "url"]]
     except Exception:
         return pd.DataFrame()
-
-def get_sentiment_label(score: float) -> str:
-    if score > 0.5: return "Very Positive"
-    if score > 0.1: return "Positive"
-    if score > -0.1: return "Neutral"
-    if score > -0.5: return "Negative"
-    return "Very Negative"
 
 # ------------------------------------------------------------------------------
 # Robust returns handling
@@ -548,7 +575,7 @@ def main():
         st.divider()
 
         st.markdown("**📰 Live News**")
-        news = fetch_live_news(session, config.CRYPTOCOMPARE_API_KEY)
+        news = fetch_live_news(config.CRYPTOCOMPARE_API_KEY)
         if not news.empty:
             for _, row in news.head(5).iterrows():
                 cls = "risk-on" if row["compound"] > 0 else "risk-off"
