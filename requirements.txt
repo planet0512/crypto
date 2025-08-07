@@ -10,3 +10,4 @@ openai
 PyPortfolioOpt
 scikit-learn
 seaborn
+yfinance
