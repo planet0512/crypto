@@ -689,29 +689,30 @@ def main():
         st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
     
         # Show latest allocation
-        if not allocation_history.empty:
-    st.subheader("Current Asset Allocation")
+    if not allocation_history.empty:
+        
+        st.subheader("Current Asset Allocation")
 
-    # Columns that are NOT assets
-    exclude_cols = {
-        "date", "regime", "transaction_cost", "method",
-        "expected_return", "volatility", "sharpe_ratio", "n_assets"
-    }
-
-    latest_alloc = allocation_history.iloc[-1].drop(labels=exclude_cols, errors="ignore")
-    latest_alloc = latest_alloc[latest_alloc > 0] * 100  # Convert to %
-
-    if not latest_alloc.empty:
-        fig = px.pie(
-            values=latest_alloc.values,
-            names=latest_alloc.index,
-            title="Portfolio Allocation (%)",
-            hole=0.3
-        )
-        fig.update_traces(textposition="inside", textinfo="percent+label")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No active positions in the latest allocation.")
+        # Columns that are NOT assets
+        exclude_cols = {
+            "date", "regime", "transaction_cost", "method",
+            "expected_return", "volatility", "sharpe_ratio", "n_assets"
+        }
+    
+        latest_alloc = allocation_history.iloc[-1].drop(labels=exclude_cols, errors="ignore")
+        latest_alloc = latest_alloc[latest_alloc > 0] * 100  # Convert to %
+    
+        if not latest_alloc.empty:
+            fig = px.pie(
+                values=latest_alloc.values,
+                names=latest_alloc.index,
+                title="Portfolio Allocation (%)",
+                hole=0.3
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No active positions in the latest allocation.")
 
     
     st.subheader("Back Test Performance Dashboard") 
