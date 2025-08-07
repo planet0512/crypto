@@ -651,7 +651,7 @@ def main():
 
     center = st.container()
     with center:
-        run = st.button("🚀 Run Enhanced Backtest Analysis", type="primary", use_container_width=True)
+        run = st.button("🚀 Run Enhanced Portfolio Recommendations and Backtest", type="primary", use_container_width=True)
 
     if not run:
         st.stop()
