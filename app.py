@@ -24,7 +24,7 @@ st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Alloc
 # --- CONFIGURATION ---
 DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
 
-CRYPTOCOMPARE_API_KEY = st.secrets.get("94962fd845ea903749954d66cd59c12c0ee2ee6d8d1f45b3c74e461e9cdc5757", "")
+CRYPTOCOMPARE_API_KEY = st.secrets.get("CRYPTOCOMPARE_API_KEY", "")
 NEWS_HISTORY_DAYS = 730
 
 # --- NLTK DATA DOWNLOADER FOR STREAMLIT CLOUD ---
