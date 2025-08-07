@@ -557,10 +557,14 @@ class BacktestEngine:
         transaction_costs: list
     ) -> Dict:
     
+        # 1) Clean returns once at the top ---------------------------------------
+        returns = (returns.replace([np.inf, -np.inf], np.nan)
+                           .dropna())
+    
         if returns.empty:
             return {}
     
-        # --- use helper so we never return inf/nan -------------------------------
+        # 2) Core metrics via helper --------------------------------------------
         (
             total_return,
             annualized_return,
@@ -568,46 +572,46 @@ class BacktestEngine:
             sharpe_ratio,
             sortino_ratio,
         ) = calc_basic_metrics(returns)
-        # -------------------------------------------------------------------------
     
-        # Drawdown
-        cumulative = (1 + returns).cumprod()
-        rolling_max = cumulative.expanding().max()
-        drawdown = (cumulative - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
+        # 3) Drawdown ------------------------------------------------------------
+        cumulative   = (1 + returns).cumprod()
+        rolling_max  = cumulative.expanding().max()
+        max_drawdown = ((cumulative - rolling_max) / rolling_max).min()
     
-        # Benchmark (unchanged)…
+        # 4) Benchmark (BTC)  ----------------------------------------------------
         benchmark_metrics = {}
         if "BTC" in prices_df.columns:
-            btc_returns = prices_df["BTC"].pct_change().dropna()
-            if len(btc_returns) > 0:
-                btc_tot, btc_ann, btc_vol, btc_sharpe, _ = calc_basic_metrics(btc_returns)
-                btc_cumulative = (1 + btc_returns).cumprod()
-                btc_max_drawdown = (btc_cumulative - btc_cumulative.expanding().max()) / btc_cumulative.expanding().max()
+            btc_ret = (prices_df["BTC"].pct_change()
+                                      .replace([np.inf, -np.inf], np.nan)
+                                      .dropna())
+            if len(btc_ret):
+                btc_tot, btc_ann, btc_vol, btc_sharpe, _ = calc_basic_metrics(btc_ret)
+                btc_dd = ((1 + btc_ret).cumprod() - (1 + btc_ret).cumprod().expanding().max()) \
+                         / (1 + btc_ret).cumprod().expanding().max()
                 benchmark_metrics = {
                     "btc_annual_return": btc_ann,
-                    "btc_volatility": btc_vol,
-                    "btc_sharpe_ratio": btc_sharpe,
-                    "btc_max_drawdown": btc_max_drawdown.min(),
-                    "excess_return": annualized_return - btc_ann,
-                    "excess_sharpe": sharpe_ratio - btc_sharpe,
+                    "btc_volatility":    btc_vol,
+                    "btc_sharpe_ratio":  btc_sharpe,
+                    "btc_max_drawdown":  btc_dd.min(),
+                    "excess_return":     safe_ratio(annualized_return - btc_ann, 1),
+                    "excess_sharpe":     safe_ratio(sharpe_ratio - btc_sharpe, 1)
                 }
     
-        total_txn_costs = sum(transaction_costs)
-        avg_annual_txn_cost = total_txn_costs * (365 / len(returns)) if len(returns) else 0
+        # 5) Transaction cost summary -------------------------------------------
+        total_txn_costs       = sum(transaction_costs)
+        avg_annual_txn_cost   = safe_ratio(total_txn_costs * 365, len(returns))
     
         return {
-            "total_return": total_return,
-            "annualized_return": annualized_return,
-            "annualized_volatility": annualized_vol,
-            "sharpe_ratio": sharpe_ratio,
-            "sortino_ratio": sortino_ratio,
-            "max_drawdown": max_drawdown,
-            "total_transaction_costs": total_txn_costs,
-            "avg_annual_transaction_cost": avg_annual_txn_cost,
+            "total_return":                 total_return,
+            "annualized_return":            annualized_return,
+            "annualized_volatility":        annualized_vol,
+            "sharpe_ratio":                 sharpe_ratio,
+            "sortino_ratio":                sortino_ratio,
+            "max_drawdown":                 max_drawdown,
+            "total_transaction_costs":      total_txn_costs,
+            "avg_annual_transaction_cost":  avg_annual_txn_cost,
             **benchmark_metrics,
         }
-
 
 # ==============================================================================
 # ENHANCED VISUALIZATION FUNCTIONS
