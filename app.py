@@ -540,7 +540,7 @@ Regime distribution: {reg_stats.to_dict()}
 Provide: (1) executive summary, (2) effect of sentiment, (3) risk, (4) positioning rationale, (5) forward outlook. <= 500 words.
 """
         out = client.chat.completions.create(
-            model="google/gemini-2.0-flash-exp",
+            model="google/gemini-2.5-flash",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
