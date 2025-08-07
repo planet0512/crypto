@@ -104,7 +104,9 @@ def load_data(url: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 @st.cache_data(ttl=900)
+
 def fetch_live_news(session: requests.Session, api_key: str) -> pd.DataFrame:
+    session = create_requests_session() 
     if not api_key:
         return pd.DataFrame()
     url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
