@@ -29,7 +29,7 @@ st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Alloc
 # --- CONFIGURATION ---
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 CRYPTOCOMPARE_API_KEY = st.secrets.get("CRYPTOCOMPARE_API_KEY", "")
-DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/main/final_app_data.csv"
+DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
 SENTIMENT_ZSCORE_THRESHOLD = 1.0 # z-score above which we are in a "Risk-On" regime
 
 @st.cache_resource
