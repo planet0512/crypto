@@ -9,3 +9,4 @@ matplotlib
 openai
 PyPortfolioOpt
 scikit-learn
+seaborn
