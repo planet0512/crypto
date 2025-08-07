@@ -660,8 +660,8 @@ def create_performance_dashboard(
                 line=dict(color="#F7931A", width=2, dash="dash"),
                 hovertemplate="Date: %{x}<br>Return: %{y:.2f}<extra></extra>"
             ),
-        row=1, col=1, secondary_y=False
-    )
+            row=1, col=1, secondary_y=False
+        )
     fig_perf.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
 
     # Rolling Sharpe (top-right)
@@ -729,18 +729,19 @@ def create_performance_dashboard(
                 x=[f"Month {i}" for i in range(1, 13)],
                 y=monthly_pivot.index,
                 colorscale="RdYlGn",
-                zmin=min(0, z_min * 1.1),  # Dynamic range
+                zmin=min(0, z_min * 1.1),
                 zmax=max(0, z_max * 1.1),
                 name="Monthly Returns %",
                 hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{z:.2f}%<extra></extra>"
             ),
             row=2, col=2
-        )
+    )
 
-    # Final layout pass
+    # Final layout pass with dynamic width
+    container_width = st.get_container_width() or 1200  # Fallback to 1200 if None
     fig_perf.update_layout(
         height=800,
-        width=lambda: st.get_container_width() if st.get_container_width() else 1200,
+        width=container_width,
         margin=dict(l=60, r=140, t=60, b=60),
         legend=dict(orientation="h", x=0, y=-0.15, bgcolor="rgba(0,0,0,0)"),
         coloraxis_colorbar=dict(x=1.05, len=0.8),
@@ -753,7 +754,6 @@ def create_performance_dashboard(
     fig_perf.update_yaxes(title_text="Drawdown %", row=2, col=1)
 
     return fig_perf
-
 def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     """Create sentiment analysis visualization."""
     
