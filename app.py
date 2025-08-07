@@ -96,6 +96,37 @@ def setup_nltk():
         st.error(f"Failed to download NLTK data: {e}")
         return False
 
+
+# ==============================================================================
+# ADDITIONAL UTILITY FUNCTIONS
+# ==============================================================================
+
+### >>> PERF-METRIC HELPERS ----------------------------------------------------
+import numpy as np      # already imported at top, but safe here if you move code
+
+def safe_ratio(num, den):
+    """Return num/den but avoid ±inf and divide-by-zero warnings."""
+    if den in (0, np.nan, None) or np.isclose(den, 0):
+        return np.nan
+    return num / den
+
+def calc_basic_metrics(ret):
+    """
+    Total return, annualised return, annualised vol, Sharpe, Sortino.
+    Returns np.nan instead of inf when vol = 0.
+    """
+    tot = (1 + ret).prod() - 1
+    ann = (1 + tot) ** (365 / len(ret)) - 1
+    vol = ret.std() * np.sqrt(365)
+    sharpe = safe_ratio(ann, vol)
+
+    downside = ret[ret < 0]
+    dvol = downside.std() * np.sqrt(365) if len(downside) else 0
+    sortino = safe_ratio(ann, dvol)
+    return tot, ann, vol, sharpe, sortino
+### <<< -----------------------------------------------------------------------
+
+
 # ==============================================================================
 # ENHANCED DATA HANDLING & CACHING
 # ==============================================================================
@@ -518,27 +549,31 @@ class BacktestEngine:
         
         return portfolio_returns
     
-    def _calculate_performance_metrics(
-        self, 
-        returns: pd.Series, 
-        prices_df: pd.DataFrame, 
+     def _calculate_performance_metrics(
+        self,
+        returns: pd.Series,
+        prices_df: pd.DataFrame,
         transaction_costs: list
     ) -> Dict:
         """Calculate comprehensive performance metrics."""
+
         if returns.empty:
             return {}
-        
-        # Basic metrics
-        total_return = (1 + returns).prod() - 1
-        annualized_return = (1 + total_return) ** (365 / len(returns)) - 1
-        annualized_vol = returns.std() * np.sqrt(365)
-        sharpe_ratio = annualized_return / annualized_vol if annualized_vol > 0 else 0
-        
-        # Drawdown analysis
+
+        # ----- use helper ----------------------------------------------------
+        (total_return,
+         annualized_return,
+         annualized_vol,
+         sharpe_ratio,
+         sortino_ratio) = calc_basic_metrics(returns)
+        # ---------------------------------------------------------------------
+
+        # Drawdown analysis (unchanged)
         cumulative = (1 + returns).cumprod()
         rolling_max = cumulative.expanding().max()
         drawdown = (cumulative - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
+        
         
         # Sortino ratio (downside deviation)
         downside_returns = returns[returns < 0]
@@ -593,6 +628,21 @@ def create_performance_dashboard(strategy_returns: pd.Series, prices_df: pd.Data
     """Create comprehensive performance dashboard using Plotly."""
     
     # Cumulative returns chart
+    # give each subplot breathing room
+    fig_perf.update_layout(
+        height=800,
+        width=1200,                 # or use_container_width=False
+        margin=dict(l=60, r=120, t=60, b=60),
+    )
+
+# tidy legend
+    fig_perf.update_layout(legend=dict(
+        orientation="h",
+        x=0, y=-0.15,
+        bgcolor="rgba(0,0,0,0)"
+    ))
+
+    
     fig_perf = make_subplots(
         rows=2, cols=2,
         subplot_titles=('Cumulative Performance', 'Rolling Sharpe Ratio', 'Drawdown Analysis', 'Monthly Returns Heatmap'),
