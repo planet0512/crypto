@@ -27,7 +27,7 @@ st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Alloc
 # --- CONFIGURATION ---
 # IMPORTANT: These must be the 'raw' URLs from your public GitHub repository
 PRICE_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
-NEWS_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/stage_1_news_raw.csv.gz"
+RAW_NEWS_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/stage_1_news_raw.csv.gz"
 
 @st.cache_resource
 def setup_nltk():
