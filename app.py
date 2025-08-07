@@ -691,7 +691,8 @@ def main():
         # Show latest allocation
         if not allocation_history.empty:
             st.subheader("Current Asset Allocation")
-            latest_alloc = allocation_history.iloc[-1].select_dtypes(include=[np.number]) * 100
+            latest_alloc = allocation_history.iloc[-1][allocation_history.iloc[-1].apply(lambda x: isinstance(x, (int, float)))] * 100
+
 
             st.bar_chart(latest_alloc)
     
