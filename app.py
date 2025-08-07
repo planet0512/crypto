@@ -461,16 +461,22 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
     # Monthly heatmap (clean labels)
     monthly = strategy_returns.resample("M").apply(lambda x: (1 + x).prod() - 1)
     heat = monthly.to_frame("ret")
-    heat["Year"] = heat.index.year
+    heat["Year"] = heat.index.year.astype(str)  # Convert to string for categorical axis
     heat["Month"] = heat.index.strftime("%b")
-    order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    
+    # Ensure months are ordered
+    order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    
+    # Pivot table
     pivot = heat.pivot(index="Year", columns="Month", values="ret").reindex(columns=order)
+    
     if not pivot.empty:
         fig.add_trace(
             go.Heatmap(
                 z=pivot.values * 100.0,
                 x=pivot.columns,
-                y=pivot.index.astype(int),
+                y=pivot.index,  # Strings now → categorical axis
                 colorscale="RdYlGn",
                 colorbar_title="%",
                 hovertemplate="%{y} %{x}: %{z:.2f}%<extra></extra>",
@@ -478,6 +484,7 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
             ),
             row=2, col=2,
         )
+
 
     fig.update_yaxes(title_text="Cumulative Return", row=1, col=1)
     fig.update_yaxes(title_text="Sharpe", row=1, col=2)
