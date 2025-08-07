@@ -955,11 +955,33 @@ def run_full_analysis(config: Config, backtest_engine: BacktestEngine):
         st.markdown("## Asset Allocation Analysis")
         
         if not allocation_history.empty:
-            # Current allocation
+            # Current allocation - FIXED VERSION
             latest_allocation = allocation_history.iloc[-1]
-            latest_weights = pd.Series({k: v for k, v in latest_allocation.items() 
-                                      if k not in ['date', 'regime', 'transaction_cost', 'method', 'expected_return', 'volatility', 'sharpe_ratio', 'n_assets']})
-            latest_weights = latest_weights[latest_weights > 0.01].sort_values(ascending=False)
+            
+            # More robust extraction of weights
+            non_meta_cols = ['date', 'regime', 'transaction_cost', 'method', 
+                           'expected_return', 'volatility', 'sharpe_ratio', 'n_assets']
+            
+            # Convert latest_allocation to dict if it's not already
+            if hasattr(latest_allocation, 'to_dict'):
+                latest_dict = latest_allocation.to_dict()
+            else:
+                latest_dict = dict(latest_allocation)
+            
+            # Filter out metadata and ensure numeric values
+            latest_weights_dict = {}
+            for k, v in latest_dict.items():
+                if k not in non_meta_cols:
+                    try:
+                        # Convert to float, skip if it fails
+                        numeric_val = float(v) if v is not None else 0.0
+                        if numeric_val > 0.01:  # Only include significant weights
+                            latest_weights_dict[k] = numeric_val
+                    except (ValueError, TypeError):
+                        # Skip non-numeric values
+                        continue
+            
+            latest_weights = pd.Series(latest_weights_dict).sort_values(ascending=False)
             
             col1, col2 = st.columns([1, 1])
             
@@ -978,49 +1000,75 @@ def run_full_analysis(config: Config, backtest_engine: BacktestEngine):
             
             with col2:
                 st.markdown("### Allocation Details")
-                allocation_df = pd.DataFrame({
-                    'Asset': latest_weights.index,
-                    'Weight': [f"{w:.1%}" for w in latest_weights.values],
-                    'Value ($)': [f"${w * 100000:.0f}" for w in latest_weights.values]  # Assuming $100k portfolio
-                })
-                st.dataframe(allocation_df, hide_index=True)
+                if not latest_weights.empty:
+                    allocation_df = pd.DataFrame({
+                        'Asset': latest_weights.index,
+                        'Weight': [f"{w:.1%}" for w in latest_weights.values],
+                        'Value ($)': [f"${w * 100000:.0f}" for w in latest_weights.values]  # Assuming $100k portfolio
+                    })
+                    st.dataframe(allocation_df, hide_index=True)
+                else:
+                    st.info("No significant allocations to display")
             
-            # Allocation over time
+            # Allocation over time - FIXED VERSION
             st.markdown("### Portfolio Evolution Over Time")
             
             # Create allocation history chart
             allocation_df_full = pd.DataFrame(allocation_history)
-            if 'date' in allocation_df_full.columns:
-                allocation_df_full['date'] = pd.to_datetime(allocation_df_full['date'])
-                allocation_df_full = allocation_df_full.set_index('date')
+            
+            try:
+                if 'date' in allocation_df_full.columns:
+                    allocation_df_full['date'] = pd.to_datetime(allocation_df_full['date'])
+                    allocation_df_full = allocation_df_full.set_index('date')
+                    
+                    # Get asset columns more carefully
+                    asset_cols = []
+                    for col in allocation_df_full.columns:
+                        if col not in non_meta_cols:
+                            # Check if column contains numeric data
+                            try:
+                                pd.to_numeric(allocation_df_full[col], errors='coerce').mean()
+                                asset_cols.append(col)
+                            except:
+                                continue
+                    
+                    if asset_cols:
+                        # Convert asset columns to numeric, replacing errors with 0
+                        for col in asset_cols:
+                            allocation_df_full[col] = pd.to_numeric(allocation_df_full[col], errors='coerce').fillna(0)
+                        
+                        # Get top 5 assets by average allocation
+                        asset_means = allocation_df_full[asset_cols].mean()
+                        top_assets = asset_means.nlargest(5).index
+                        
+                        fig_allocation = go.Figure()
+                        
+                        for asset in top_assets:
+                            fig_allocation.add_trace(go.Scatter(
+                                x=allocation_df_full.index,
+                                y=allocation_df_full[asset] * 100,
+                                mode='lines',
+                                stackgroup='one',
+                                name=asset,
+                                fill='tonexty'
+                            ))
+                        
+                        fig_allocation.update_layout(
+                            title='Portfolio Allocation Over Time',
+                            xaxis_title='Date',
+                            yaxis_title='Allocation %',
+                            height=400
+                        )
+                        
+                        st.plotly_chart(fig_allocation, use_container_width=True)
+                    else:
+                        st.warning("No valid asset allocation data found for charting")
                 
-                # Get top 5 assets by average allocation
-                asset_cols = [col for col in allocation_df_full.columns 
-                            if col not in ['regime', 'transaction_cost', 'method', 'expected_return', 'volatility', 'sharpe_ratio', 'n_assets']]
-                
-                if asset_cols:
-                    top_assets = allocation_df_full[asset_cols].mean().nlargest(5).index
-                    
-                    fig_allocation = go.Figure()
-                    
-                    for asset in top_assets:
-                        fig_allocation.add_trace(go.Scatter(
-                            x=allocation_df_full.index,
-                            y=allocation_df_full[asset] * 100,
-                            mode='lines',
-                            stackgroup='one',
-                            name=asset,
-                            fill='tonexty'
-                        ))
-                    
-                    fig_allocation.update_layout(
-                        title='Portfolio Allocation Over Time',
-                        xaxis_title='Date',
-                        yaxis_title='Allocation %',
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig_allocation, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not create allocation chart: {str(e)}")
+                st.write("Debug info:")
+                st.write("Column dtypes:", allocation_df_full.dtypes)
+                st.write("Sample data:", allocation_df_full.head())
             
             # Regime analysis
             st.markdown("### Regime Analysis")
@@ -1053,6 +1101,7 @@ def run_full_analysis(config: Config, backtest_engine: BacktestEngine):
         else:
             st.warning("No allocation history available")
     
+    # Continue with tab3 and tab4 as before...
     with tab3:
         st.markdown("## Sentiment Analysis")
         
