@@ -1,7 +1,7 @@
 # app.py
 #
 # Final version for Streamlit Cloud deployment.
-# Includes fixes for the caching (TypeError) and backtest (IndexError) issues.
+# Includes fixes for deployment bugs AND the "Fast Test Mode" feature.
 
 import streamlit as st
 import pandas as pd
@@ -22,19 +22,18 @@ from openai import OpenAI
 from pypfopt import EfficientFrontier, risk_models, expected_returns
 
 # ==============================================================================
-# PAGE CONFIGURATION
+# PAGE CONFIGURATION & SETTINGS
 # ==============================================================================
-st.set_page_config(
-    page_title="Project AlphaSent",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(page_title="Project AlphaSent", page_icon="📈", layout="wide")
 
 st.title("📈 Project AlphaSent")
 st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Allocation")
 
 # --- API KEY CONFIGURATION ---
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
+
+# --- TESTING CONFIGURATION ---
+MAX_NEWS_ARTICLES_FOR_TESTING = 300
 
 # Ensure NLTK data is available
 try:
@@ -92,33 +91,53 @@ def fetch_market_data(_session, symbol, limit=2000) -> pd.DataFrame:
     except Exception: return pd.DataFrame()
 
 @st.cache_data
-def fetch_news_range(_session, start_dt, end_dt):
+def fetch_news_range(_session, start_dt, end_dt, max_articles=None):
+    """
+    Fetches news for a date range, with an optional max article limit for faster testing.
+    """
     st.write(f"Fetching news from {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}...")
+    if max_articles:
+        st.write(f"(Test Mode: Limiting to {max_articles} articles)")
+        
     url, out, current_end_dt = "https://data-api.coindesk.com/news/v1/article/list", [], end_dt
+    
     while current_end_dt > start_dt:
         to_ts = int(current_end_dt.timestamp())
         try:
             r = _session.get(f"{url}?lang=EN&to_ts={to_ts}")
-            d = pd.DataFrame(r.json()["Data"]); d["date"] = pd.to_datetime(d["PUBLISHED_ON"], unit="s")
+            d = pd.DataFrame(r.json()["Data"])
+            # Defensive check for required columns
+            if "PUBLISHED_ON" not in d.columns: break
+            d["date"] = pd.to_datetime(d["PUBLISHED_ON"], unit="s")
             out.append(d)
             current_end_dt = datetime.fromtimestamp(d["PUBLISHED_ON"].min() - 1)
-        except Exception: break
+
+            if max_articles and sum(len(batch) for batch in out) >= max_articles:
+                st.write("✓ Reached test article limit.")
+                break
+        except Exception: 
+            break
+            
     if not out: return pd.DataFrame()
-    
-    # --- FIX 1: Select only necessary columns to prevent caching (unhashable type: 'dict') error ---
     final_df = pd.concat(out, ignore_index=True)
+    
     required_cols = ['date', 'PUBLISHED_ON', 'TITLE', 'BODY', 'URL']
     existing_cols = [col for col in required_cols if col in final_df.columns]
-    final_df = final_df[existing_cols]
+    final_df = final_df[existing_cols].drop_duplicates(subset=['URL'])
+    
+    if max_articles and len(final_df) > max_articles:
+        final_df = final_df.head(max_articles)
 
-    final_df = final_df.drop_duplicates(subset=['URL'])
     st.write(f"✓ Fetched {len(final_df)} articles.")
     return final_df
 
 @st.cache_data
 def run_sentiment_pipeline(news_df: pd.DataFrame) -> pd.DataFrame:
     st.write("Running Sentiment Pipeline...")
-    if news_df.empty: return pd.DataFrame()
+    if news_df.empty or "TITLE" not in news_df.columns or "BODY" not in news_df.columns:
+        st.warning("Sentiment pipeline skipped due to missing news data or columns.")
+        return pd.DataFrame()
+
     df = news_df.copy()
     df['text_to_analyze'] = df['TITLE'].fillna('') + ". " + df['BODY'].fillna('')
     df['clean_text'] = df['text_to_analyze'].apply(lambda text: re.sub(r'[^A-Za-z\s]+', '', BeautifulSoup(text, "html.parser").get_text()).lower().strip())
@@ -152,11 +171,8 @@ def run_backtest(prices_df, sentiment_index):
     for i in range(len(rebalance_dates) - 1):
         start_date, end_date = rebalance_dates[i], rebalance_dates[i+1]
         
-        # --- FIX 2: Check if sentiment data exists for this date to prevent IndexError ---
         sentiment_slice = sentiment_zscore.loc[:start_date]
-        if sentiment_slice.empty:
-            continue # Skip rebalance if no sentiment data is available yet
-
+        if sentiment_slice.empty: continue
         sentiment_signal = sentiment_slice.iloc[-1]
         if pd.isna(sentiment_signal): sentiment_signal = 0
 
@@ -185,7 +201,7 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
     if not OPENROUTER_API_KEY:
         return "Please add your OpenRouter API Key to Streamlit secrets to enable this feature."
     client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
-    prompt_content = f"""...""" # Prompt from previous turn
+    prompt_content = f"""...""" # Your prompt here
     try:
         completion = client.chat.completions.create(model="google/gemini-1.5-flash-latest", messages=[{"role": "user", "content": prompt_content}])
         return completion.choices[0].message.content
@@ -195,18 +211,28 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
 # ==============================================================================
 # MAIN APP LOGIC (Station 4)
 # ==============================================================================
+st.sidebar.header("Settings")
+test_mode = st.sidebar.checkbox("🚀 Use Fast Test Mode (300 articles)", True)
 
-if st.button("🚀 Run Full Analysis & Backtest", type="primary"):
+if st.sidebar.button("Run Full Analysis & Backtest", type="primary"):
     
     with st.spinner("Running pipeline... This may take a few minutes."):
         session = create_requests_session()
         top_coins = get_top_coins(session)
         all_prices = {coin: fetch_market_data(session, coin) for coin in top_coins}
-        news_df = fetch_news_range(session, datetime.now() - timedelta(days=365), datetime.now())
+        
+        # Use test mode setting to limit news articles
+        num_articles_to_fetch = MAX_NEWS_ARTICLES_FOR_TESTING if test_mode else None
+        news_df = fetch_news_range(
+            session, 
+            datetime.now() - timedelta(days=365), 
+            datetime.now(),
+            max_articles=num_articles_to_fetch
+        )
+        
         prices_df = pd.concat({coin: df['close'] for coin, df in all_prices.items() if not df.empty}, axis=1).ffill()
         sentiment_index = run_sentiment_pipeline(news_df)
         
-        # --- Align data starting dates before backtest ---
         if not sentiment_index.empty:
             first_sentiment_date = sentiment_index.dropna().index.min()
             prices_df = prices_df[prices_df.index >= first_sentiment_date]
@@ -248,4 +274,4 @@ if st.button("🚀 Run Full Analysis & Backtest", type="primary"):
         st.error("Could not complete the backtest. Please check the console for errors.")
 
 else:
-    st.info("Click the button above to run the full data pipeline and backtest.")
+    st.info("Configure settings in the sidebar and click the button to run the analysis.")
