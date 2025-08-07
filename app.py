@@ -1,27 +1,27 @@
 # app.py
 #
 # FINAL SUBMISSION VERSION
-# This definitive version combines the sophisticated multi-tab UI of the "Kepler"
-# design with the completed "AlphaSent" sentiment-enhanced backtesting engine.
+# This definitive version combines the robust, sentiment-filtered backtest
+# with a professional, multi-tab Streamlit dashboard for results visualization.
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime
-import matplotlib.pyplot as plt
-import seaborn as sns
+from datetime import datetime, timedelta
+import re
 from bs4 import BeautifulSoup
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from openai import OpenAI
-from pypfopt import EfficientFrontier, risk_models, expected_returns
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import matplotlib.pyplot as plt
+from openai import OpenAI
 
 # ==============================================================================
 # PAGE CONFIGURATION & SETUP
 # ==============================================================================
 st.set_page_config(page_title="Project AlphaSent", page_icon="📈", layout="wide")
+
 st.title("📈 Project AlphaSent")
 st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Allocation")
 
