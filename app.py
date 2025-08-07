@@ -203,7 +203,7 @@ def generate_gemini_summary(results: dict, latest_sentiment: float, latest_weigh
     """
     try:
         completion = client.chat.completions.create(
-            model="google/gemini-1.5-flash",
+            model="google/gemini-2.5-flash",
             messages=[{"role": "user", "content": prompt}]
         )
         return completion.choices[0].message.content
