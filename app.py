@@ -669,8 +669,9 @@ def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_retur
     fig = make_subplots(
         rows=2, cols=1,
         subplot_titles=('Market Sentiment Index', 'Sentiment vs Strategy Performance'),
-        shared_xaxis=True,
-        vertical_spacing=0.1
+        vertical_spacing=0.1,
+        specs=[[{"secondary_y": False}],
+               [{"secondary_y": True}]]
     )
     
     # Sentiment z-score
@@ -678,25 +679,29 @@ def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_retur
     sentiment_zscore = (sentiment - sentiment.rolling(90).mean()) / sentiment.rolling(90).std()
     
     fig.add_trace(
-        go.Scatter(x=sentiment_zscore.index, y=sentiment_zscore.values, name='Sentiment Z-Score', line=dict(color='purple')),
+        go.Scatter(x=sentiment_zscore.index, y=sentiment_zscore.values, 
+                  name='Sentiment Z-Score', line=dict(color='purple')),
         row=1, col=1
     )
     
     # Add regime thresholds
-    fig.add_hline(y=1.0, line_dash="dash", line_color="green", annotation_text="Risk-On Threshold", row=1, col=1)
-    fig.add_hline(y=-1.0, line_dash="dash", line_color="red", annotation_text="Risk-Off Threshold", row=1, col=1)
+    fig.add_hline(y=1.0, line_dash="dash", line_color="green", 
+                  annotation_text="Risk-On Threshold", row=1, col=1)
+    fig.add_hline(y=-1.0, line_dash="dash", line_color="red", 
+                  annotation_text="Risk-Off Threshold", row=1, col=1)
     
     # Strategy performance overlay
     if not strategy_returns.empty:
         strategy_cum = (1 + strategy_returns).cumprod()
         fig.add_trace(
-            go.Scatter(x=strategy_cum.index, y=strategy_cum.values, name='Strategy Performance', line=dict(color='#3B82F6'), yaxis='y2'),
-            row=2, col=1
+            go.Scatter(x=strategy_cum.index, y=strategy_cum.values, 
+                      name='Strategy Performance', line=dict(color='#3B82F6')),
+            row=2, col=1, secondary_y=True
         )
     
     fig.update_layout(height=600, title_text="Sentiment Analysis Dashboard")
     fig.update_yaxes(title_text="Z-Score", row=1, col=1)
-    fig.update_yaxes(title_text="Cumulative Return", row=2, col=1)
+    fig.update_yaxes(title_text="Cumulative Return", row=2, col=1, secondary_y=True)
     
     return fig
 
