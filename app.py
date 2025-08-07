@@ -105,16 +105,13 @@ def setup_nltk():
 import numpy as np      # already imported at top, but safe here if you move code
 
 def safe_ratio(num, den):
-    """Return num/den but avoid ±inf and divide-by-zero warnings."""
+    """Return num/den but avoid ±inf & divide-by-zero warnings."""
     if den in (0, np.nan, None) or np.isclose(den, 0):
         return np.nan
     return num / den
 
-def calc_basic_metrics(ret):
-    """
-    Total return, annualised return, annualised vol, Sharpe, Sortino.
-    Returns np.nan instead of inf when vol = 0.
-    """
+def calc_basic_metrics(ret: pd.Series):
+    """Total return, annualised return/vol, Sharpe, Sortino."""
     tot = (1 + ret).prod() - 1
     ann = (1 + tot) ** (365 / len(ret)) - 1
     vol = ret.std() * np.sqrt(365)
@@ -123,6 +120,7 @@ def calc_basic_metrics(ret):
     downside = ret[ret < 0]
     dvol = downside.std() * np.sqrt(365) if len(downside) else 0
     sortino = safe_ratio(ann, dvol)
+
     return tot, ann, vol, sharpe, sortino
 ### <<< -----------------------------------------------------------------------
 
@@ -521,103 +519,67 @@ class BacktestEngine:
         
         return weights, metadata
     
-    def _calculate_period_returns(
-        self, 
-        daily_returns: pd.DataFrame, 
-        weights: pd.Series, 
-        start_date, 
-        end_date, 
-        txn_cost: float
-    ) -> pd.Series:
-        """Calculate portfolio returns for a specific period."""
-        period_returns = daily_returns.loc[start_date:end_date]
-        
-        if period_returns.empty:
-            return pd.Series()
-        
-        # Align weights with returns
-        common_assets = weights.index.intersection(period_returns.columns)
-        aligned_weights = weights.reindex(common_assets, fill_value=0)
-        aligned_returns = period_returns[common_assets]
-        
-        # Calculate portfolio returns
-        portfolio_returns = (aligned_returns * aligned_weights).sum(axis=1)
-        
-        # Apply transaction cost to first return
-        if not portfolio_returns.empty:
-            portfolio_returns.iloc[0] -= txn_cost
-        
-        return portfolio_returns
+# ==============================================================================
+# BacktestEngine._calculate_performance_metrics  ⟶  REPLACE entire method body
+# ==============================================================================
     def _calculate_performance_metrics(
         self,
         returns: pd.Series,
         prices_df: pd.DataFrame,
         transaction_costs: list
     ) -> Dict:
-        """Calculate comprehensive performance metrics."""
-
+    
         if returns.empty:
             return {}
-
-        # ----- use helper ----------------------------------------------------
-        (total_return,
-         annualized_return,
-         annualized_vol,
-         sharpe_ratio,
-         sortino_ratio) = calc_basic_metrics(returns)
-        # ---------------------------------------------------------------------
-
-        # Drawdown analysis (unchanged)
+    
+        # --- use helper so we never return inf/nan -------------------------------
+        (
+            total_return,
+            annualized_return,
+            annualized_vol,
+            sharpe_ratio,
+            sortino_ratio,
+        ) = calc_basic_metrics(returns)
+        # -------------------------------------------------------------------------
+    
+        # Drawdown
         cumulative = (1 + returns).cumprod()
         rolling_max = cumulative.expanding().max()
         drawdown = (cumulative - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
-        
-        
-        # Sortino ratio (downside deviation)
-        downside_returns = returns[returns < 0]
-        downside_vol = downside_returns.std() * np.sqrt(365) if len(downside_returns) > 0 else 0
-        sortino_ratio = annualized_return / downside_vol if downside_vol > 0 else 0
-        
-        # Benchmark comparison (if BTC available)
+    
+        # Benchmark (unchanged)…
         benchmark_metrics = {}
-        if 'BTC' in prices_df.columns:
-            btc_returns = prices_df['BTC'].pct_change().dropna()
+        if "BTC" in prices_df.columns:
+            btc_returns = prices_df["BTC"].pct_change().dropna()
             if len(btc_returns) > 0:
-                btc_total_return = (1 + btc_returns).prod() - 1
-                btc_annual_return = (1 + btc_total_return) ** (365 / len(btc_returns)) - 1
-                btc_vol = btc_returns.std() * np.sqrt(365)
-                btc_sharpe = btc_annual_return / btc_vol if btc_vol > 0 else 0
-                
+                btc_tot, btc_ann, btc_vol, btc_sharpe, _ = calc_basic_metrics(btc_returns)
                 btc_cumulative = (1 + btc_returns).cumprod()
-                btc_rolling_max = btc_cumulative.expanding().max()
-                btc_drawdown = (btc_cumulative - btc_rolling_max) / btc_rolling_max
-                btc_max_drawdown = btc_drawdown.min()
-                
+                btc_max_drawdown = (btc_cumulative - btc_cumulative.expanding().max()) / btc_cumulative.expanding().max()
                 benchmark_metrics = {
-                    'btc_annual_return': btc_annual_return,
-                    'btc_volatility': btc_vol,
-                    'btc_sharpe_ratio': btc_sharpe,
-                    'btc_max_drawdown': btc_max_drawdown,
-                    'excess_return': annualized_return - btc_annual_return,
-                    'excess_sharpe': sharpe_ratio - btc_sharpe
+                    "btc_annual_return": btc_ann,
+                    "btc_volatility": btc_vol,
+                    "btc_sharpe_ratio": btc_sharpe,
+                    "btc_max_drawdown": btc_max_drawdown.min(),
+                    "excess_return": annualized_return - btc_ann,
+                    "excess_sharpe": sharpe_ratio - btc_sharpe,
                 }
-        
-        # Transaction cost impact
+    
         total_txn_costs = sum(transaction_costs)
-        avg_annual_txn_cost = total_txn_costs * (365 / len(returns)) if len(returns) > 0 else 0
-        
+        avg_annual_txn_cost = total_txn_costs * (365 / len(returns)) if len(returns) else 0
+    
         return {
-            'total_return': total_return,
-            'annualized_return': annualized_return,
-            'annualized_volatility': annualized_vol,
-            'sharpe_ratio': sharpe_ratio,
-            'sortino_ratio': sortino_ratio,
-            'max_drawdown': max_drawdown,
-            'total_transaction_costs': total_txn_costs,
-            'avg_annual_transaction_cost': avg_annual_txn_cost,
-            **benchmark_metrics
+            "total_return": total_return,
+            "annualized_return": annualized_return,
+            "annualized_volatility": annualized_vol,
+            "sharpe_ratio": sharpe_ratio,
+            "sortino_ratio": sortino_ratio,
+            "max_drawdown": max_drawdown,
+            "total_transaction_costs": total_txn_costs,
+            "avg_annual_transaction_cost": avg_annual_txn_cost,
+            **benchmark_metrics,
         }
+
 
 # ==============================================================================
 # ENHANCED VISUALIZATION FUNCTIONS
@@ -737,16 +699,21 @@ def create_performance_dashboard(
     # 6) Final layout pass (spacing, legend, titles)
     # ------------------------------------------------------------------
     fig_perf.update_layout(
-        height=800,            # overall figure height
-        width=1200,            # drop if you prefer use_container_width
-        margin=dict(l=60, r=120, t=60, b=60),
+        height=800,
+        width=1200,                   # drop if you prefer use_container_width
+        margin=dict(l=60, r=140, t=60, b=60),   # extra right margin
         legend=dict(
             orientation="h",
-            x=0, y=-0.15,      # below the figure
-            bgcolor="rgba(0,0,0,0)"
+            x=0,
+            y=-0.15,
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        coloraxis_colorbar=dict(      # push heat-map colour-bar out of the grid
+            x=1.05,
+            len=0.8,
         ),
         title_text="AlphaSent Performance Dashboard",
-        showlegend=True
+        showlegend=True,
     )
 
     fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1)
