@@ -34,7 +34,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- API KEY & SETTINGS ---
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
-NEWS_HISTORY_DAYS = 730
+MAX_NEWS_ARTICLES_FOR_TESTING = 300
+NEWS_HISTORY_DAYS = 100
 
 @st.cache_resource
 def setup_nltk():
