@@ -622,11 +622,9 @@ def create_performance_dashboard(
     prices_df: pd.DataFrame,
     metrics: Dict
 ) -> go.Figure:
-    """Create the four-panel performance dashboard."""
-
-    # ------------------------------------------------------------------
-    # 1) Build the subplot grid
-    # ------------------------------------------------------------------
+    """Create the four-panel performance dashboard with enhanced UI."""
+    
+    # Build the subplot grid
     fig_perf = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
@@ -635,25 +633,22 @@ def create_performance_dashboard(
             "Drawdown Analysis",
             "Monthly Returns Heatmap"
         ),
-        specs=[[{"secondary_y": True}, {"secondary_y": False}],
+        specs=[[{"secondary_y": True}, {"secondary_y": True}],
                [{"secondary_y": False}, {"secondary_y": False}]]
     )
 
-    # ------------------------------------------------------------------
-    # 2) Cumulative performance (top-left)
-    # ------------------------------------------------------------------
+    # Cumulative performance (top-left)
     strategy_cum = (1 + strategy_returns).cumprod()
     fig_perf.add_trace(
         go.Scatter(
             x=strategy_cum.index,
             y=strategy_cum.values,
             name="AlphaSent Strategy",
-            line=dict(color="#3B82F6", width=3)
+            line=dict(color="#3B82F6", width=3),
+            hovertemplate="Date: %{x}<br>Return: %{y:.2f}<extra></extra>"
         ),
-        row=1, col=1
+        row=1, col=1, secondary_y=False
     )
-
-    # Bitcoin benchmark
     if "BTC" in prices_df.columns:
         btc_returns = prices_df["BTC"].pct_change().dropna()
         btc_cum = (1 + btc_returns).cumprod().reindex(strategy_cum.index, method="ffill")
@@ -662,30 +657,42 @@ def create_performance_dashboard(
                 x=btc_cum.index,
                 y=btc_cum.values,
                 name="Bitcoin",
-                line=dict(color="#F7931A", width=2, dash="dash")
+                line=dict(color="#F7931A", width=2, dash="dash"),
+                hovertemplate="Date: %{x}<br>Return: %{y:.2f}<extra></extra>"
             ),
-            row=1, col=1
-        )
+        row=1, col=1, secondary_y=False
+    )
+    fig_perf.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
 
-    # ------------------------------------------------------------------
-    # 3) Rolling Sharpe (top-right)
-    # ------------------------------------------------------------------
+    # Rolling Sharpe (top-right)
     rolling_sharpe = strategy_returns.rolling(90).apply(
-        lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 else 0
+        lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 and len(x) >= 90 else np.nan
     )
     fig_perf.add_trace(
         go.Scatter(
             x=rolling_sharpe.index,
             y=rolling_sharpe.values,
             name="90-Day Rolling Sharpe",
-            line=dict(color="#10B981")
+            line=dict(color="#10B981"),
+            hovertemplate="Date: %{x}<br>Sharpe: %{y:.2f}<extra></extra>"
         ),
-        row=1, col=2
+        row=1, col=2, secondary_y=False
+    )
+    # Add volatility as secondary y-axis
+    rolling_vol = strategy_returns.rolling(90).std() * np.sqrt(365)
+    fig_perf.add_trace(
+        go.Scatter(
+            x=rolling_vol.index,
+            y=rolling_vol.values,
+            name="90-Day Volatility",
+            line=dict(color="#EF4444", dash="dot"),
+            hovertemplate="Date: %{x}<br>Volatility: %{y:.2f}<extra></extra>",
+            yaxis="y2"
+        ),
+        row=1, col=2, secondary_y=True
     )
 
-    # ------------------------------------------------------------------
-    # 4) Drawdown (bottom-left)
-    # ------------------------------------------------------------------
+    # Drawdown (bottom-left)
     rolling_max = strategy_cum.expanding().max()
     drawdown = (strategy_cum - rolling_max) / rolling_max * 100
     fig_perf.add_trace(
@@ -694,14 +701,14 @@ def create_performance_dashboard(
             y=drawdown.values,
             fill="tonexty",
             name="Drawdown %",
-            line=dict(color="#EF4444")
+            line=dict(color="#EF4444"),
+            hovertemplate="Date: %{x}<br>Drawdown: %{y:.2f}%<extra></extra>"
         ),
         row=2, col=1
     )
+    fig_perf.add_hline(y=0, line_dash="dash", line_color="gray", row=2, col=1)
 
-    # ------------------------------------------------------------------
-    # 5) Monthly returns heat-map (bottom-right)
-    # ------------------------------------------------------------------
+    # Monthly returns heat-map (bottom-right)
     monthly_returns = (
         strategy_returns
         .resample("M")
@@ -714,46 +721,38 @@ def create_performance_dashboard(
         .first()
         .unstack(fill_value=0)
     )
-
     if not monthly_pivot.empty:
+        z_min, z_max = monthly_pivot.values.min(), monthly_pivot.values.max()
         fig_perf.add_trace(
             go.Heatmap(
                 z=monthly_pivot.values,
                 x=[f"Month {i}" for i in range(1, 13)],
                 y=monthly_pivot.index,
                 colorscale="RdYlGn",
-                name="Monthly Returns %"
+                zmin=min(0, z_min * 1.1),  # Dynamic range
+                zmax=max(0, z_max * 1.1),
+                name="Monthly Returns %",
+                hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{z:.2f}%<extra></extra>"
             ),
             row=2, col=2
         )
 
-    # ------------------------------------------------------------------
-    # 6) Final layout pass (spacing, legend, titles)
-    # ------------------------------------------------------------------
+    # Final layout pass
     fig_perf.update_layout(
         height=800,
-        width=1200,                   # drop if you prefer use_container_width
-        margin=dict(l=60, r=140, t=60, b=60),   # extra right margin
-        legend=dict(
-            orientation="h",
-            x=0,
-            y=-0.15,
-            bgcolor="rgba(0,0,0,0)",
-        ),
-        coloraxis_colorbar=dict(      # push heat-map colour-bar out of the grid
-            x=1.05,
-            len=0.8,
-        ),
+        width=lambda: st.get_container_width() if st.get_container_width() else 1200,
+        margin=dict(l=60, r=140, t=60, b=60),
+        legend=dict(orientation="h", x=0, y=-0.15, bgcolor="rgba(0,0,0,0)"),
+        coloraxis_colorbar=dict(x=1.05, len=0.8),
         title_text="AlphaSent Performance Dashboard",
         showlegend=True,
     )
-
-    fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1)
-    fig_perf.update_yaxes(title_text="Sharpe Ratio",       row=1, col=2)
-    fig_perf.update_yaxes(title_text="Drawdown %",         row=2, col=1)
+    fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1, secondary_y=False)
+    fig_perf.update_yaxes(title_text="Sharpe Ratio", row=1, col=2, secondary_y=False)
+    fig_perf.update_yaxes(title_text="Volatility", row=1, col=2, secondary_y=True)
+    fig_perf.update_yaxes(title_text="Drawdown %", row=2, col=1)
 
     return fig_perf
-
 
 def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     """Create sentiment analysis visualization."""
@@ -910,6 +909,10 @@ def main():
         
         st.divider()
         
+        # Refresh button
+        if st.button("🔄 Refresh Backtest"):
+            st.session_state.backtest_complete = False
+        
         # Live news feed
         st.markdown("### 📰 Live News Feed")
         
@@ -935,8 +938,9 @@ def main():
     # Action button
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("🚀 Run Enhanced Backtest Analysis", type="primary", use_container_width=True):
+        if st.button("🚀 Run Enhanced Backtest Analysis", type="primary", use_container_width=True) or not st.session_state.backtest_complete:
             run_full_analysis(config, backtest_engine)
+            st.session_state.backtest_complete = True
 
 def run_full_analysis(config: Config, backtest_engine: BacktestEngine):
     """Run the complete backtest analysis with enhanced reporting."""
