@@ -23,8 +23,8 @@ st.subheader("A Sentiment-Enhanced Framework for Systematic Cryptocurrency Alloc
 # --- CONFIGURATION ---
 OPENROUTER_API_KEY = st.secrets.get("OPENROUTER_API_KEY", "")
 # --- GITHUB DATA URLS ---
-MAIN_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/main/final_app_data.csv"
-NEWS_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/main/processed_news_with_sentiment.csv"
+MAIN_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/final_app_data.csv"
+NEWS_DATA_URL = "https://raw.githubusercontent.com/planet0512/crypto/refs/heads/main/processed_news_with_sentiment.csv"
 
 # ==============================================================================
 # BACKEND FUNCTIONS
