@@ -371,7 +371,8 @@ class BacktestEngine:
         annualized_return = cum ** (365.0 / len(returns)) - 1.0 if cum > 0 else 0.0
 
         ann_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
-        sharpe = (ann_ret / ann_vol) if (ann_vol > 0 and np.isfinite(ann_ret)) else 0.0
+        sharpe = (annualized_return / annualized_vol) if (annualized_vol > 0 and np.isfinite(annualized_return)) else 0.0
+
 
         cum_curve = (1 + r).cumprod()
         roll_max = cum_curve.cummax()
