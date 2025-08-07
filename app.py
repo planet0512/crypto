@@ -96,35 +96,6 @@ def setup_nltk():
         st.error(f"Failed to download NLTK data: {e}")
         return False
 
-
-# ==============================================================================
-# ADDITIONAL UTILITY FUNCTIONS
-# ==============================================================================
-
-### >>> PERF-METRIC HELPERS ----------------------------------------------------
-import numpy as np      # already imported at top, but safe here if you move code
-
-def safe_ratio(num, den):
-    """Return num/den but avoid ±inf & divide-by-zero warnings."""
-    if den in (0, np.nan, None) or np.isclose(den, 0):
-        return np.nan
-    return num / den
-
-def calc_basic_metrics(ret: pd.Series):
-    """Total return, annualised return/vol, Sharpe, Sortino."""
-    tot = (1 + ret).prod() - 1
-    ann = (1 + tot) ** (365 / len(ret)) - 1
-    vol = ret.std() * np.sqrt(365)
-    sharpe = safe_ratio(ann, vol)
-
-    downside = ret[ret < 0]
-    dvol = downside.std() * np.sqrt(365) if len(downside) else 0
-    sortino = safe_ratio(ann, dvol)
-
-    return tot, ann, vol, sharpe, sortino
-### <<< -----------------------------------------------------------------------
-
-
 # ==============================================================================
 # ENHANCED DATA HANDLING & CACHING
 # ==============================================================================
@@ -338,7 +309,7 @@ class PortfolioOptimizer:
     def _fallback_weights(self, asset_names) -> pd.Series:
         """Fallback to equal weights if optimization fails."""
         return pd.Series(1.0 / len(asset_names), index=asset_names)
-    
+
 # ==============================================================================
 # ENHANCED BACKTESTING ENGINE
 # ==============================================================================
@@ -518,223 +489,177 @@ class BacktestEngine:
             metadata['regime'] = 'neutral'
         
         return weights, metadata
+    
     def _calculate_period_returns(
-        self,
-        daily_returns: pd.DataFrame,
-        weights: pd.Series,
-        start_date,
-        end_date,
-        txn_cost: float,
+        self, 
+        daily_returns: pd.DataFrame, 
+        weights: pd.Series, 
+        start_date, 
+        end_date, 
+        txn_cost: float
     ) -> pd.Series:
-        """Calculate portfolio returns between two rebalance dates."""
-
+        """Calculate portfolio returns for a specific period."""
         period_returns = daily_returns.loc[start_date:end_date]
-
+        
         if period_returns.empty:
-            return pd.Series(dtype=float)
-
-        # Align assets present in both weights and returns
+            return pd.Series()
+        
+        # Align weights with returns
         common_assets = weights.index.intersection(period_returns.columns)
         aligned_weights = weights.reindex(common_assets, fill_value=0)
         aligned_returns = period_returns[common_assets]
-
-        # Daily portfolio return = weighted sum of asset returns
+        
+        # Calculate portfolio returns
         portfolio_returns = (aligned_returns * aligned_weights).sum(axis=1)
-
-        # Apply transaction cost on the *first* day of the period
+        
+        # Apply transaction cost to first return
         if not portfolio_returns.empty:
             portfolio_returns.iloc[0] -= txn_cost
-
+        
         return portfolio_returns
     
-# ==============================================================================
-# BacktestEngine._calculate_performance_metrics  ⟶  REPLACE entire method body
-# ==============================================================================
     def _calculate_performance_metrics(
-        self,
-        returns: pd.Series,
-        prices_df: pd.DataFrame,
+        self, 
+        returns: pd.Series, 
+        prices_df: pd.DataFrame, 
         transaction_costs: list
     ) -> Dict:
-    
-        # 1) Clean returns once at the top ---------------------------------------
-        returns = (returns.replace([np.inf, -np.inf], np.nan)
-                           .dropna())
-    
+        """Calculate comprehensive performance metrics."""
         if returns.empty:
             return {}
-    
-        # 2) Core metrics via helper --------------------------------------------
-        (
-            total_return,
-            annualized_return,
-            annualized_vol,
-            sharpe_ratio,
-            sortino_ratio,
-        ) = calc_basic_metrics(returns)
-    
-        # 3) Drawdown ------------------------------------------------------------
-        cumulative   = (1 + returns).cumprod()
-        rolling_max  = cumulative.expanding().max()
-        max_drawdown = ((cumulative - rolling_max) / rolling_max).min()
-    
-        # 4) Benchmark (BTC)  ----------------------------------------------------
+        
+        # Basic metrics
+        total_return = (1 + returns).prod() - 1
+        annualized_return = (1 + total_return) ** (365 / len(returns)) - 1
+        annualized_vol = returns.std() * np.sqrt(365)
+        sharpe_ratio = annualized_return / annualized_vol if annualized_vol > 0 else 0
+        
+        # Drawdown analysis
+        cumulative = (1 + returns).cumprod()
+        rolling_max = cumulative.expanding().max()
+        drawdown = (cumulative - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+        
+        # Sortino ratio (downside deviation)
+        downside_returns = returns[returns < 0]
+        downside_vol = downside_returns.std() * np.sqrt(365) if len(downside_returns) > 0 else 0
+        sortino_ratio = annualized_return / downside_vol if downside_vol > 0 else 0
+        
+        # Benchmark comparison (if BTC available)
         benchmark_metrics = {}
-        if "BTC" in prices_df.columns:
-            btc_ret = (prices_df["BTC"].pct_change()
-                                      .replace([np.inf, -np.inf], np.nan)
-                                      .dropna())
-            if len(btc_ret):
-                btc_tot, btc_ann, btc_vol, btc_sharpe, _ = calc_basic_metrics(btc_ret)
-                btc_dd = ((1 + btc_ret).cumprod() - (1 + btc_ret).cumprod().expanding().max()) \
-                         / (1 + btc_ret).cumprod().expanding().max()
+        if 'BTC' in prices_df.columns:
+            btc_returns = prices_df['BTC'].pct_change().dropna()
+            if len(btc_returns) > 0:
+                btc_total_return = (1 + btc_returns).prod() - 1
+                btc_annual_return = (1 + btc_total_return) ** (365 / len(btc_returns)) - 1
+                btc_vol = btc_returns.std() * np.sqrt(365)
+                btc_sharpe = btc_annual_return / btc_vol if btc_vol > 0 else 0
+                
+                btc_cumulative = (1 + btc_returns).cumprod()
+                btc_rolling_max = btc_cumulative.expanding().max()
+                btc_drawdown = (btc_cumulative - btc_rolling_max) / btc_rolling_max
+                btc_max_drawdown = btc_drawdown.min()
+                
                 benchmark_metrics = {
-                    "btc_annual_return": btc_ann,
-                    "btc_volatility":    btc_vol,
-                    "btc_sharpe_ratio":  btc_sharpe,
-                    "btc_max_drawdown":  btc_dd.min(),
-                    "excess_return":     safe_ratio(annualized_return - btc_ann, 1),
-                    "excess_sharpe":     safe_ratio(sharpe_ratio - btc_sharpe, 1)
+                    'btc_annual_return': btc_annual_return,
+                    'btc_volatility': btc_vol,
+                    'btc_sharpe_ratio': btc_sharpe,
+                    'btc_max_drawdown': btc_max_drawdown,
+                    'excess_return': annualized_return - btc_annual_return,
+                    'excess_sharpe': sharpe_ratio - btc_sharpe
                 }
-    
-        # 5) Transaction cost summary -------------------------------------------
-        total_txn_costs       = sum(transaction_costs)
-        avg_annual_txn_cost   = safe_ratio(total_txn_costs * 365, len(returns))
-    
+        
+        # Transaction cost impact
+        total_txn_costs = sum(transaction_costs)
+        avg_annual_txn_cost = total_txn_costs * (365 / len(returns)) if len(returns) > 0 else 0
+        
         return {
-            "total_return":                 total_return,
-            "annualized_return":            annualized_return,
-            "annualized_volatility":        annualized_vol,
-            "sharpe_ratio":                 sharpe_ratio,
-            "sortino_ratio":                sortino_ratio,
-            "max_drawdown":                 max_drawdown,
-            "total_transaction_costs":      total_txn_costs,
-            "avg_annual_transaction_cost":  avg_annual_txn_cost,
-            **benchmark_metrics,
+            'total_return': total_return,
+            'annualized_return': annualized_return,
+            'annualized_volatility': annualized_vol,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'max_drawdown': max_drawdown,
+            'total_transaction_costs': total_txn_costs,
+            'avg_annual_transaction_cost': avg_annual_txn_cost,
+            **benchmark_metrics
         }
 
 # ==============================================================================
 # ENHANCED VISUALIZATION FUNCTIONS
 # ==============================================================================
 
-def create_performance_dashboard(
-    strategy_returns: pd.Series,
-    prices_df: pd.DataFrame,
-    metrics: Dict
-) -> go.Figure:
-    """Create the four-panel performance dashboard with enhanced UI."""
-    fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=(
-            "<b>Cumulative Performance</b>",
-            "<b>Rolling 90D Sharpe & Volatility</b>",
-            "<b>Drawdown Analysis</b>",
-            "<b>Monthly Returns Heatmap</b>"
-        ),
-        specs=[[{"secondary_y": False}, {"secondary_y": True}],
-               [{"secondary_y": False}, {}]],
-        vertical_spacing=0.15,
-        horizontal_spacing=0.1
-    )
-
-    # 1. Cumulative Performance
-    strategy_cum = (1 + strategy_returns).cumprod()
-    fig.add_trace(go.Scatter(
-        x=strategy_cum.index, y=strategy_cum, name="AlphaSent Strategy",
-        line=dict(color="#3B82F6", width=2.5)
-    ), row=1, col=1)
-
-    if "BTC" in prices_df.columns:
-        btc_returns = prices_df["BTC"].pct_change().dropna()
-        btc_cum = (1 + btc_returns).cumprod().reindex(strategy_cum.index, method="ffill")
-        fig.add_trace(go.Scatter(
-            x=btc_cum.index, y=btc_cum, name="Bitcoin (Benchmark)",
-            line=dict(color="#F7931A", width=1.5, dash="dash")
-        ), row=1, col=1)
-
-    # 2. Rolling Sharpe & Volatility
-    rolling_sharpe = strategy_returns.rolling(90).apply(lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 else 0)
-    rolling_vol = strategy_returns.rolling(90).std() * np.sqrt(365)
-    fig.add_trace(go.Scatter(
-        x=rolling_sharpe.index, y=rolling_sharpe, name="Rolling Sharpe",
-        line=dict(color="#10B981")
-    ), row=1, col=2, secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=rolling_vol.index, y=rolling_vol, name="Rolling Volatility",
-        line=dict(color="#EF4444", dash="dot"), opacity=0.7
-    ), row=1, col=2, secondary_y=True)
-
-    # 3. Drawdown
-    rolling_max = strategy_cum.expanding().max()
-    drawdown = (strategy_cum - rolling_max) / rolling_max
-    fig.add_trace(go.Scatter(
-        x=drawdown.index, y=drawdown, fill='tozeroy', name="Drawdown",
-        line=dict(color="#EF4444", width=1)
-    ), row=2, col=1)
-
-    # 4. Monthly Returns Heatmap
-    monthly_ret = strategy_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
-    monthly_pivot = monthly_ret.unstack(level=0).rename(
-        columns=lambda c: c.strftime('%b'),
-        index=lambda c: c.strftime('%Y')
-    ).T
-    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    monthly_pivot = monthly_pivot.reindex(months)
-
-    fig.add_trace(go.Heatmap(
-        z=monthly_pivot.values * 100,
-        x=monthly_pivot.columns,
-        y=monthly_pivot.index,
-        colorscale="RdYlGn",
-        zmid=0,
-        colorbar=dict(title='%', x=1.0, y=0.22, len=0.45)
-    ), row=2, col=2)
-
-    # Update layout
-    fig.update_layout(
-        template="plotly_dark",
-        height=700,
-        margin=dict(l=50, r=50, t=80, b=80),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="left", x=0),
-        title=dict(text="<b>AlphaSent Performance Dashboard</b>", x=0.5, font_size=20),
-    )
-    fig.update_yaxes(title_text="Cumulative Return", row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Sharpe Ratio", row=1, col=2, secondary_y=False)
-    fig.update_yaxes(title_text="Ann. Volatility", row=1, col=2, secondary_y=True, showgrid=False)
-    fig.update_yaxes(title_text="Drawdown", tickformat=".0%", row=2, col=1)
-    return fig
-
-def plot_regime_performance(strategy_returns: pd.Series, allocation_df: pd.DataFrame):
-    """Visualize performance against market regimes."""
-    fig = go.Figure()
-    strategy_cum = (1 + strategy_returns).cumprod()
-
-    fig.add_trace(go.Scatter(
-        x=strategy_cum.index, y=strategy_cum,
-        name="Strategy Cumulative Return",
-        line=dict(color="#3B82F6", width=2)
-    ))
-
-    # Add regime background colors
-    colors = {'risk_on': 'rgba(46, 204, 113, 0.2)', 'risk_off': 'rgba(231, 76, 60, 0.2)', 'neutral': 'rgba(149, 165, 166, 0.2)'}
-    for i in range(len(allocation_df) - 1):
-        fig.add_vrect(
-            x0=allocation_df['date'].iloc[i],
-            x1=allocation_df['date'].iloc[i+1],
-            fillcolor=colors.get(allocation_df['regime'].iloc[i], 'rgba(0,0,0,0)'),
-            layer="below", line_width=0,
-            annotation_text=allocation_df['regime'].iloc[i].replace('_', ' ').title(),
-            annotation_position="top left",
-        )
-
-    fig.update_layout(
-        title="<b>Strategy Performance Through Market Regimes</b>",
-        template="plotly_dark",
-        height=500,
-        yaxis_title="Cumulative Return"
-    )
-    return fig
+def create_performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame, metrics: Dict):
+    """Create comprehensive performance dashboard using Plotly."""
     
+    # Cumulative returns chart
+    fig_perf = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('Cumulative Performance', 'Rolling Sharpe Ratio', 'Drawdown Analysis', 'Monthly Returns Heatmap'),
+        specs=[[{"secondary_y": True}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+    
+    # Calculate cumulative returns
+    strategy_cum = (1 + strategy_returns).cumprod()
+    
+    # Plot strategy performance
+    fig_perf.add_trace(
+        go.Scatter(x=strategy_cum.index, y=strategy_cum.values, name='AlphaSent Strategy', line=dict(color='#3B82F6', width=3)),
+        row=1, col=1
+    )
+    
+    # Add Bitcoin benchmark if available
+    if 'BTC' in prices_df.columns:
+        btc_returns = prices_df['BTC'].pct_change().dropna()
+        btc_cum = (1 + btc_returns).cumprod()
+        # Align with strategy returns
+        btc_aligned = btc_cum.reindex(strategy_cum.index, method='ffill')
+        fig_perf.add_trace(
+            go.Scatter(x=btc_aligned.index, y=btc_aligned.values, name='Bitcoin', line=dict(color='#F7931A', width=2, dash='dash')),
+            row=1, col=1
+        )
+    
+    # Rolling Sharpe ratio
+    rolling_sharpe = strategy_returns.rolling(window=90).apply(
+        lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 else 0
+    )
+    fig_perf.add_trace(
+        go.Scatter(x=rolling_sharpe.index, y=rolling_sharpe.values, name='90-Day Rolling Sharpe', line=dict(color='#10B981')),
+        row=1, col=2
+    )
+    
+    # Drawdown analysis
+    rolling_max = strategy_cum.expanding().max()
+    drawdown = (strategy_cum - rolling_max) / rolling_max * 100
+    fig_perf.add_trace(
+        go.Scatter(x=drawdown.index, y=drawdown.values, fill='tonexty', name='Drawdown %', line=dict(color='#EF4444')),
+        row=2, col=1
+    )
+    
+    # Monthly returns heatmap
+    monthly_returns = strategy_returns.resample('M').apply(lambda x: (1 + x).prod() - 1) * 100
+    monthly_pivot = monthly_returns.groupby([monthly_returns.index.year, monthly_returns.index.month]).first().unstack(fill_value=0)
+    
+    if not monthly_pivot.empty:
+        fig_perf.add_trace(
+            go.Heatmap(
+                z=monthly_pivot.values,
+                x=[f"Month {i}" for i in range(1, 13)],
+                y=monthly_pivot.index,
+                colorscale='RdYlGn',
+                name='Monthly Returns %'
+            ),
+            row=2, col=2
+        )
+    
+    fig_perf.update_layout(height=800, showlegend=True, title_text="AlphaSent Performance Dashboard")
+    fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1)
+    fig_perf.update_yaxes(title_text="Sharpe Ratio", row=1, col=2)
+    fig_perf.update_yaxes(title_text="Drawdown %", row=2, col=1)
+    
+    return fig_perf
+
 def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     """Create sentiment analysis visualization."""
     
@@ -890,10 +815,6 @@ def main():
         
         st.divider()
         
-        # Refresh button
-        if st.button("🔄 Refresh Backtest"):
-            st.session_state.backtest_complete = False
-        
         # Live news feed
         st.markdown("### 📰 Live News Feed")
         
@@ -919,9 +840,8 @@ def main():
     # Action button
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        if st.button("🚀 Run Enhanced Backtest Analysis", type="primary", use_container_width=True) or not st.session_state.backtest_complete:
+        if st.button("🚀 Run Enhanced Backtest Analysis", type="primary", use_container_width=True):
             run_full_analysis(config, backtest_engine)
-            st.session_state.backtest_complete = True
 
 def run_full_analysis(config: Config, backtest_engine: BacktestEngine):
     """Run the complete backtest analysis with enhanced reporting."""
