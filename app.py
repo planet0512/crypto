@@ -623,136 +623,118 @@ def create_performance_dashboard(
     metrics: Dict
 ) -> go.Figure:
     """Create the four-panel performance dashboard with enhanced UI."""
-    
-    # Build the subplot grid
-    fig_perf = make_subplots(
+    fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=(
-            "Cumulative Performance",
-            "Rolling Sharpe Ratio",
-            "Drawdown Analysis",
-            "Monthly Returns Heatmap"
+            "<b>Cumulative Performance</b>",
+            "<b>Rolling 90D Sharpe & Volatility</b>",
+            "<b>Drawdown Analysis</b>",
+            "<b>Monthly Returns Heatmap</b>"
         ),
-        specs=[[{"secondary_y": True}, {"secondary_y": True}],
-               [{"secondary_y": False}, {"secondary_y": False}]]
+        specs=[[{"secondary_y": False}, {"secondary_y": True}],
+               [{"secondary_y": False}, {}]],
+        vertical_spacing=0.15,
+        horizontal_spacing=0.1
     )
 
-    # Cumulative performance (top-left)
+    # 1. Cumulative Performance
     strategy_cum = (1 + strategy_returns).cumprod()
-    fig_perf.add_trace(
-        go.Scatter(
-            x=strategy_cum.index,
-            y=strategy_cum.values,
-            name="AlphaSent Strategy",
-            line=dict(color="#3B82F6", width=3),
-            hovertemplate="Date: %{x}<br>Return: %{y:.2f}<extra></extra>"
-        ),
-        row=1, col=1, secondary_y=False
-    )
+    fig.add_trace(go.Scatter(
+        x=strategy_cum.index, y=strategy_cum, name="AlphaSent Strategy",
+        line=dict(color="#3B82F6", width=2.5)
+    ), row=1, col=1)
+
     if "BTC" in prices_df.columns:
         btc_returns = prices_df["BTC"].pct_change().dropna()
         btc_cum = (1 + btc_returns).cumprod().reindex(strategy_cum.index, method="ffill")
-        fig_perf.add_trace(
-            go.Scatter(
-                x=btc_cum.index,
-                y=btc_cum.values,
-                name="Bitcoin",
-                line=dict(color="#F7931A", width=2, dash="dash"),
-                hovertemplate="Date: %{x}<br>Return: %{y:.2f}<extra></extra>"
-            ),
-            row=1, col=1, secondary_y=False
-        )
-    fig_perf.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=btc_cum.index, y=btc_cum, name="Bitcoin (Benchmark)",
+            line=dict(color="#F7931A", width=1.5, dash="dash")
+        ), row=1, col=1)
 
-    # Rolling Sharpe (top-right)
-    rolling_sharpe = strategy_returns.rolling(90).apply(
-        lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 and len(x) >= 90 else np.nan
-    )
-    fig_perf.add_trace(
-        go.Scatter(
-            x=rolling_sharpe.index,
-            y=rolling_sharpe.values,
-            name="90-Day Rolling Sharpe",
-            line=dict(color="#10B981"),
-            hovertemplate="Date: %{x}<br>Sharpe: %{y:.2f}<extra></extra>"
-        ),
-        row=1, col=2, secondary_y=False
-    )
-    # Add volatility as secondary y-axis
+    # 2. Rolling Sharpe & Volatility
+    rolling_sharpe = strategy_returns.rolling(90).apply(lambda x: (x.mean() / x.std() * np.sqrt(365)) if x.std() > 0 else 0)
     rolling_vol = strategy_returns.rolling(90).std() * np.sqrt(365)
-    fig_perf.add_trace(
-        go.Scatter(
-            x=rolling_vol.index,
-            y=rolling_vol.values,
-            name="90-Day Volatility",
-            line=dict(color="#EF4444", dash="dot"),
-            hovertemplate="Date: %{x}<br>Volatility: %{y:.2f}<extra></extra>",
-            yaxis="y2"
-        ),
-        row=1, col=2, secondary_y=True
-    )
+    fig.add_trace(go.Scatter(
+        x=rolling_sharpe.index, y=rolling_sharpe, name="Rolling Sharpe",
+        line=dict(color="#10B981")
+    ), row=1, col=2, secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=rolling_vol.index, y=rolling_vol, name="Rolling Volatility",
+        line=dict(color="#EF4444", dash="dot"), opacity=0.7
+    ), row=1, col=2, secondary_y=True)
 
-    # Drawdown (bottom-left)
+    # 3. Drawdown
     rolling_max = strategy_cum.expanding().max()
-    drawdown = (strategy_cum - rolling_max) / rolling_max * 100
-    fig_perf.add_trace(
-        go.Scatter(
-            x=drawdown.index,
-            y=drawdown.values,
-            fill="tonexty",
-            name="Drawdown %",
-            line=dict(color="#EF4444"),
-            hovertemplate="Date: %{x}<br>Drawdown: %{y:.2f}%<extra></extra>"
-        ),
-        row=2, col=1
-    )
-    fig_perf.add_hline(y=0, line_dash="dash", line_color="gray", row=2, col=1)
+    drawdown = (strategy_cum - rolling_max) / rolling_max
+    fig.add_trace(go.Scatter(
+        x=drawdown.index, y=drawdown, fill='tozeroy', name="Drawdown",
+        line=dict(color="#EF4444", width=1)
+    ), row=2, col=1)
 
-    # Monthly returns heat-map (bottom-right)
-    monthly_returns = (
-        strategy_returns
-        .resample("M")
-        .apply(lambda x: (1 + x).prod() - 1)
-        * 100
-    )
-    monthly_pivot = (
-        monthly_returns
-        .groupby([monthly_returns.index.year, monthly_returns.index.month])
-        .first()
-        .unstack(fill_value=0)
-    )
-    if not monthly_pivot.empty:
-        z_min, z_max = monthly_pivot.values.min(), monthly_pivot.values.max()
-        fig_perf.add_trace(
-            go.Heatmap(
-                z=monthly_pivot.values,
-                x=[f"Month {i}" for i in range(1, 13)],
-                y=monthly_pivot.index,
-                colorscale="RdYlGn",
-                zmin=min(0, z_min * 1.1),
-                zmax=max(0, z_max * 1.1),
-                name="Monthly Returns %",
-                hovertemplate="Year: %{y}<br>Month: %{x}<br>Return: %{z:.2f}%<extra></extra>"
-            ),
-            row=2, col=2
-    )
+    # 4. Monthly Returns Heatmap
+    monthly_ret = strategy_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
+    monthly_pivot = monthly_ret.unstack(level=0).rename(
+        columns=lambda c: c.strftime('%b'),
+        index=lambda c: c.strftime('%Y')
+    ).T
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    monthly_pivot = monthly_pivot.reindex(months)
 
-    # Final layout pass with static width
-    fig_perf.update_layout(
-        height=800,
-        width=1200,  # Static fallback width
-        margin=dict(l=60, r=140, t=60, b=60),
-        legend=dict(orientation="h", x=0, y=-0.15, bgcolor="rgba(0,0,0,0)"),
-        coloraxis_colorbar=dict(x=1.05, len=0.8),
-        title_text="AlphaSent Performance Dashboard",
-        showlegend=True,
-    )
-    fig_perf.update_yaxes(title_text="Cumulative Return", row=1, col=1, secondary_y=False)
-    fig_perf.update_yaxes(title_text="Sharpe Ratio", row=1, col=2, secondary_y=False)
-    fig_perf.update_yaxes(title_text="Volatility", row=1, col=2, secondary_y=True)
-    fig_perf.update_yaxes(title_text="Drawdown %", row=2, col=1)
+    fig.add_trace(go.Heatmap(
+        z=monthly_pivot.values * 100,
+        x=monthly_pivot.columns,
+        y=monthly_pivot.index,
+        colorscale="RdYlGn",
+        zmid=0,
+        colorbar=dict(title='%', x=1.0, y=0.22, len=0.45)
+    ), row=2, col=2)
 
-    return fig_perf
+    # Update layout
+    fig.update_layout(
+        template="plotly_dark",
+        height=700,
+        margin=dict(l=50, r=50, t=80, b=80),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="left", x=0),
+        title=dict(text="<b>AlphaSent Performance Dashboard</b>", x=0.5, font_size=20),
+    )
+    fig.update_yaxes(title_text="Cumulative Return", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Sharpe Ratio", row=1, col=2, secondary_y=False)
+    fig.update_yaxes(title_text="Ann. Volatility", row=1, col=2, secondary_y=True, showgrid=False)
+    fig.update_yaxes(title_text="Drawdown", tickformat=".0%", row=2, col=1)
+    return fig
+
+def plot_regime_performance(strategy_returns: pd.Series, allocation_df: pd.DataFrame):
+    """Visualize performance against market regimes."""
+    fig = go.Figure()
+    strategy_cum = (1 + strategy_returns).cumprod()
+
+    fig.add_trace(go.Scatter(
+        x=strategy_cum.index, y=strategy_cum,
+        name="Strategy Cumulative Return",
+        line=dict(color="#3B82F6", width=2)
+    ))
+
+    # Add regime background colors
+    colors = {'risk_on': 'rgba(46, 204, 113, 0.2)', 'risk_off': 'rgba(231, 76, 60, 0.2)', 'neutral': 'rgba(149, 165, 166, 0.2)'}
+    for i in range(len(allocation_df) - 1):
+        fig.add_vrect(
+            x0=allocation_df['date'].iloc[i],
+            x1=allocation_df['date'].iloc[i+1],
+            fillcolor=colors.get(allocation_df['regime'].iloc[i], 'rgba(0,0,0,0)'),
+            layer="below", line_width=0,
+            annotation_text=allocation_df['regime'].iloc[i].replace('_', ' ').title(),
+            annotation_position="top left",
+        )
+
+    fig.update_layout(
+        title="<b>Strategy Performance Through Market Regimes</b>",
+        template="plotly_dark",
+        height=500,
+        yaxis_title="Cumulative Return"
+    )
+    return fig
+    
 def create_sentiment_analysis_chart(sentiment_data: pd.DataFrame, strategy_returns: pd.Series):
     """Create sentiment analysis visualization."""
     
