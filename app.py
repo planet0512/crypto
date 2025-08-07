@@ -1,8 +1,7 @@
+
 # app.py
 #
-# Final version for submission. Loads all data from the user's GitHub repository
-# and displays backtest results and a table of the latest news with sentiment.
-
+# Final version for submission
 import streamlit as st
 import pandas as pd
 import numpy as np
