@@ -737,11 +737,10 @@ def create_performance_dashboard(
             row=2, col=2
     )
 
-    # Final layout pass with dynamic width
-    container_width = st.get_container_width() or 1200  # Fallback to 1200 if None
+    # Final layout pass with static width
     fig_perf.update_layout(
         height=800,
-        width=container_width,
+        width=1200,  # Static fallback width
         margin=dict(l=60, r=140, t=60, b=60),
         legend=dict(orientation="h", x=0, y=-0.15, bgcolor="rgba(0,0,0,0)"),
         coloraxis_colorbar=dict(x=1.05, len=0.8),
