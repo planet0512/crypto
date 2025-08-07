@@ -238,4 +238,3 @@ if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
                     st.markdown(summary)
         else:
             st.error("Could not complete the backtest. The data time range may be too short or there was an issue during processing.")
-else:
