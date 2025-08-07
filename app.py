@@ -89,14 +89,29 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
     pass # Placeholder for Gemini logic
 
 # ==============================================================================
-# MAIN APP LOGIC
+# MAIN APP LOGIC (with Debugging Test)
 # ==============================================================================
 st.sidebar.header("AlphaSent Controls")
+
 if st.sidebar.button("🚀 Run Backtest", type="primary"):
+    
     app_data = load_data(MAIN_DATA_URL)
+    
+    # --- DEBUGGING TEST ---
+    if not app_data.empty:
+        st.subheader("Debugging: Loaded Data Info")
+        st.write(f"Total rows loaded: `{len(app_data)}`")
+        st.write(f"Start date: `{app_data.index.min().date()}`")
+        st.write(f"End date: `{app_data.index.max().date()}`")
+        st.write("First 5 rows:")
+        st.dataframe(app_data.head())
+        st.divider()
+    # --- END DEBUGGING TEST ---
+
     if not app_data.empty:
         with st.spinner("Running backtest..."):
             strategy_returns, latest_weights = run_backtest(app_data)
+
         if strategy_returns is not None:
             st.success("Analysis Complete!")
             # Display results...
