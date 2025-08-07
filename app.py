@@ -144,6 +144,8 @@ def fetch_live_news(api_key: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
+
+
 # ------------------------------------------------------------------------------
 # Robust returns handling
 # ------------------------------------------------------------------------------
@@ -251,6 +253,63 @@ class PortfolioOptimizer:
 
     def _fallback_weights(self, asset_names) -> pd.Series:
         return pd.Series(1.0 / max(1, len(asset_names)), index=asset_names, dtype=float)
+    # --- Portfolio Analysis Tab ---
+def portfolio_analysis_tab(asset_returns: pd.DataFrame):
+    st.header("📊 Portfolio Analysis")
+
+    if asset_returns.empty:
+        st.warning("No return data available to analyze.")
+        return
+
+    # Calculate metrics
+    mean_returns = asset_returns.mean() * 252  # Annualized
+    vol = asset_returns.std() * np.sqrt(252)   # Annualized
+    sharpe = mean_returns / vol
+
+    metrics_df = pd.DataFrame({
+        "Expected Annual Return (%)": mean_returns * 100,
+        "Annual Volatility (%)": vol * 100,
+        "Sharpe Ratio": sharpe
+    })
+
+    st.dataframe(metrics_df.style.format("{:.2f}"))
+
+    # --- Efficient Frontier ---
+    st.subheader("Efficient Frontier Simulation")
+
+    num_portfolios = 5000
+    results = np.zeros((3, num_portfolios))
+    weights_record = []
+
+    np.random.seed(42)
+    for i in range(num_portfolios):
+        weights = np.random.random(len(asset_returns.columns))
+        weights /= np.sum(weights)
+        weights_record.append(weights)
+
+        portfolio_return = np.sum(weights * mean_returns)
+        portfolio_vol = np.sqrt(np.dot(weights.T, np.dot(asset_returns.cov() * 252, weights)))
+        results[0, i] = portfolio_return
+        results[1, i] = portfolio_vol
+        results[2, i] = portfolio_return / portfolio_vol
+
+    # Plot frontier
+    fig = go.Figure(
+        data=go.Scatter(
+            x=results[1, :], y=results[0, :],
+            mode='markers',
+            marker=dict(color=results[2, :], colorscale='Viridis', showscale=True),
+            text=[f"Weights: {np.round(w, 2)}" for w in weights_record]
+        )
+    )
+    fig.update_layout(
+        xaxis_title="Volatility",
+        yaxis_title="Expected Return",
+        title="Efficient Frontier"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
 # ------------------------------------------------------------------------------
 # Backtest
@@ -628,6 +687,15 @@ def main():
     # Tabs
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Performance", "🎯 Allocation", "📈 Sentiment", "🤖 AI Insights"])
 
+    with tabs[0]:
+        # merge your available data for portfolio analysis
+        asset_returns = pd.concat([
+            strategy_returns.rename("AlphaSent"),
+            btc_returns.rename("Bitcoin")
+        ], axis=1).dropna()
+    
+        portfolio_analysis_tab(asset_returns)
+    
     with tab1:
         st.subheader("Performance Dashboard")
 
