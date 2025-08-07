@@ -579,6 +579,37 @@ def fmt_pct(x):
 def fmt_num(x, digs=2):
     return "—" if (x is None or not np.isfinite(x)) else f"{x:.{digs}f}"
 
+# --------------------------------------------------------------------
+# Helper functions
+# --------------------------------------------------------------------
+
+def portfolio_recommendation_tab(strategy_returns: pd.Series):
+    st.header("📊 Recommended Portfolio")
+
+    if strategy_returns.empty:
+        st.warning("No strategy return data available.")
+        return
+
+    # Annualized stats
+    strat_ret_annual = strategy_returns.mean() * 252
+    strat_vol_annual = strategy_returns.std() * np.sqrt(252)
+    strat_sharpe = strat_ret_annual / strat_vol_annual if strat_vol_annual > 0 else 0
+
+    st.subheader("Suggested Allocation")
+    st.write("100% AlphaSent Strategy")
+
+    st.metric("Expected Annual Return (%)", f"{strat_ret_annual*100:.2f}")
+    st.metric("Annual Volatility (%)", f"{strat_vol_annual*100:.2f}")
+    st.metric("Sharpe Ratio", f"{strat_sharpe:.2f}")
+
+
+# --------------------------------------------------------------------
+# Main app
+# --------------------------------------------------------------------
+def main():
+    # your existing main() code...
+
+
 def main():
     if not setup_nltk():
         st.stop()
