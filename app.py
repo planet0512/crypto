@@ -201,8 +201,15 @@ if st.sidebar.button("Run Full Analysis & Backtest", type="primary"):
         top_coins = get_top_coins(session)
         all_prices = {coin: fetch_market_data(session, coin) for coin in top_coins}
         
+        # --- TYPO WAS HERE: Corrected 'test_' to 'test_mode' ---
         num_articles_to_fetch = MAX_NEWS_ARTICLES_FOR_TESTING if test_mode else None
-        news_df = fetch_news_range(session, datetime.now() - timedelta(days=NEWS_HISTORY_DAYS), datetime.now(), max_articles=num_articles_to_fetch)
+        
+        news_df = fetch_news_range(
+            session, 
+            datetime.now() - timedelta(days=NEWS_HISTORY_DAYS), 
+            datetime.now(),
+            max_articles=num_articles_to_fetch
+        )
         
         prices_df = pd.concat({coin: df['close'] for coin, df in all_prices.items() if not df.empty}, axis=1).ffill()
         sentiment_index = run_sentiment_pipeline(news_df)
