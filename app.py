@@ -1,8 +1,8 @@
 # app.py
 #
 # FINAL SUBMISSION VERSION
-# This definitive version is complete, with no placeholders, and includes the full
-# multi-tab dashboard and all features for the AlphaSent project.
+# This definitive version has the correct script order and includes the full
+# multi-tab dashboard with all features for the AlphaSent project.
 
 import streamlit as st
 import pandas as pd
@@ -70,7 +70,7 @@ def load_data(url):
 
 @st.cache_data
 def fetch_and_analyze_live_news(_session, api_key):
-    """Fetches latest news and analyzes sentiment for the sidebar."""
+    """Fetches latest news and analyzes sentiment for display."""
     if not api_key: return pd.DataFrame()
     url = f"https://min-api.cryptocompare.com/data/v2/news/?lang=EN&api_key={api_key}"
     try:
@@ -131,14 +131,13 @@ def run_backtest(prices_df, sentiment_index):
     st.write("✓ Backtest complete."); return strategy_returns, last_weights, regime_df
 
 def generate_gemini_summary(results, latest_sentiment, latest_weights):
-    """Generates a summary using OpenRouter and the OpenAI library."""
+    """Generates a summary using OpenRouter."""
     if not OPENROUTER_API_KEY:
-        return "Please add your OpenRouter API Key to Streamlit secrets to enable AI analysis."
+        return "Please add your OpenRouter API Key to Streamlit secrets."
     client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
-    
     prompt = f"""
     You are a FinTech analyst summarizing a backtest of a quantitative crypto strategy called 'AlphaSent'.
-    The strategy is a **Sentiment-Regime Switching Model**. It blends an aggressive portfolio (Max Sharpe Ratio) with a defensive portfolio (Minimum Variance) based on news sentiment.
+    The strategy is a **Sentiment-Regime Switching Model**.
 
     Here are the final backtest results:
     - Annual Return: {results['Annual Return']}
@@ -156,10 +155,7 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
     3.  **Recommended Allocation:** Describe the portfolio's recommended holdings.
     """
     try:
-        completion = client.chat.completions.create(
-            model="google/gemini-2.5-flash", 
-            messages=[{"role": "user", "content": prompt}]
-        )
+        completion = client.chat.completions.create(model="google/gemini-1.5-flash", messages=[{"role": "user", "content": prompt}])
         return completion.choices[0].message.content
     except Exception as e:
         return f"Could not generate Gemini summary. Error: {e}"
@@ -168,23 +164,10 @@ def generate_gemini_summary(results, latest_sentiment, latest_weights):
 # MAIN APP LOGIC (Station 4)
 # ==============================================================================
 
-session = create_requests_session()
-
-st.sidebar.header("Live News Feed")
-live_news = fetch_and_analyze_live_news(session, CRYPTOCOMPARE_API_KEY)
-if not live_news.empty:
-    for _, row in live_news.iterrows():
-        st.sidebar.markdown(f"**{row['source']}**")
-        st.sidebar.markdown(f"[{row['title'][:55]}...]({row['url']})")
-        st.sidebar.progress(int((row['compound'] + 1) / 2 * 100))
-        st.sidebar.markdown("---")
-else:
-    st.sidebar.info("Live news feed unavailable.")
-
-st.sidebar.divider()
 st.sidebar.header("AlphaSent Controls")
-if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
-    
+run_button = st.sidebar.button("🚀 Run Full Backtest", type="primary")
+
+if run_button:
     backtest_data = load_data(DATA_URL)
     
     if not backtest_data.empty:
@@ -204,7 +187,7 @@ if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
             sharpe_ratio = annual_return / annual_volatility if annual_volatility != 0 else 0
             
             # --- Create Tabs for Results ---
-            tab1, tab2, tab3 = st.tabs(["📈 Performance Dashboard", "🔬 Strategy Internals", "🤖 Gemini AI Analysis"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📈 Performance Dashboard", "🔬 Strategy Internals", "📰 Live News Feed", "🤖 Gemini AI Analysis"])
             
             with tab1:
                 st.header("Backtest Performance Results")
@@ -236,9 +219,19 @@ if st.sidebar.button("🚀 Run Full Backtest", type="primary"):
                     latest_weights[latest_weights > 0.01].plot.pie(ax=ax_pie, autopct='%1.1f%%', startangle=90)
                     ax_pie.set_ylabel(''); ax_pie.set_title("Recommended Allocation for Next Period"); st.pyplot(fig_pie)
                 else:
-                    st.info("The final allocation is 100% Cash due to the current sentiment regime.")
+                    st.info("The final allocation is 100% Cash.")
             
             with tab3:
+                st.header("Live News & Sentiment Feed")
+                st.info("This feed shows the latest crypto news from CryptoCompare and their real-time VADER sentiment score.")
+                session = create_requests_session()
+                live_news = fetch_and_analyze_live_news(session, CRYPTOCOMPARE_API_KEY)
+                if not live_news.empty:
+                    st.dataframe(live_news, use_container_width=True)
+                else:
+                    st.warning("Live news feed could not be fetched. Ensure your CryptoCompare API Key is in your Streamlit secrets.")
+
+            with tab4:
                 st.header("Gemini AI Analysis")
                 with st.spinner("Generating AI summary..."):
                     results_dict = {"Annual Return": f"{annual_return:.2%}", "Sharpe Ratio": f"{sharpe_ratio:.2f}"}
