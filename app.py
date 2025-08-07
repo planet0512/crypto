@@ -463,22 +463,30 @@ def performance_dashboard(strategy_returns: pd.Series, prices_df: pd.DataFrame):
     heat = monthly.to_frame("ret")
     heat["Year"] = heat.index.year
     heat["Month"] = heat.index.strftime("%b")
-    order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    pivot = heat.pivot(index="Year", columns="Month", values="ret").reindex(columns=order)
+    
+    order = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    
+    pivot = heat.pivot(index="Year", columns="Month", values="ret") \
+                .reindex(columns=order)
+    
+    # ✅ Ensure the index is int type years, no fractional years
+    pivot.index = pivot.index.astype(int)
+    
     if not pivot.empty:
         fig.add_trace(
             go.Heatmap(
                 z=pivot.values * 100.0,
                 x=pivot.columns,
-                y=pivot.index.astype(int),
+                y=pivot.index,  # now clean integer years
                 colorscale="RdYlGn",
                 colorbar_title="%",
                 hovertemplate="%{y} %{x}: %{z:.2f}%<extra></extra>",
-                name="Monthly Returns %",
-            ),
-            row=2, col=2,
+                name="Monthly Returns %"
+            )
         )
 
+    
     fig.update_yaxes(title_text="Cumulative Return", row=1, col=1)
     fig.update_yaxes(title_text="Sharpe", row=1, col=2)
     fig.update_yaxes(title_text="Drawdown %", row=2, col=1)
