@@ -338,7 +338,7 @@ class PortfolioOptimizer:
     def _fallback_weights(self, asset_names) -> pd.Series:
         """Fallback to equal weights if optimization fails."""
         return pd.Series(1.0 / len(asset_names), index=asset_names)
-
+    
 # ==============================================================================
 # ENHANCED BACKTESTING ENGINE
 # ==============================================================================
@@ -518,6 +518,34 @@ class BacktestEngine:
             metadata['regime'] = 'neutral'
         
         return weights, metadata
+    def _calculate_period_returns(
+        self,
+        daily_returns: pd.DataFrame,
+        weights: pd.Series,
+        start_date,
+        end_date,
+        txn_cost: float,
+    ) -> pd.Series:
+        """Calculate portfolio returns between two rebalance dates."""
+
+        period_returns = daily_returns.loc[start_date:end_date]
+
+        if period_returns.empty:
+            return pd.Series(dtype=float)
+
+        # Align assets present in both weights and returns
+        common_assets = weights.index.intersection(period_returns.columns)
+        aligned_weights = weights.reindex(common_assets, fill_value=0)
+        aligned_returns = period_returns[common_assets]
+
+        # Daily portfolio return = weighted sum of asset returns
+        portfolio_returns = (aligned_returns * aligned_weights).sum(axis=1)
+
+        # Apply transaction cost on the *first* day of the period
+        if not portfolio_returns.empty:
+            portfolio_returns.iloc[0] -= txn_cost
+
+        return portfolio_returns
     
 # ==============================================================================
 # BacktestEngine._calculate_performance_metrics  ⟶  REPLACE entire method body
