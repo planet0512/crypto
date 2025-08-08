@@ -189,16 +189,22 @@ class PortfolioOptimizer:
         self.slippage = slippage
 
     def clean_price_data(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """Loosen NaN handling so partial histories are allowed."""
+        """
+        Loosen NaN handling so partial histories are allowed.
+        Returns an empty DataFrame instead of raising if no valid assets remain.
+        """
         min_obs = max(30, len(prices) // 10)
-        # Only require min_obs valid points, not fully NaN-free
+    
+        # Require min_obs valid points; allow forward-fill for partial histories
         valid_cols = prices.count()[lambda x: x >= min_obs].index
         cleaned = prices[valid_cols].ffill().dropna(how="all")
+    
+        # Remove assets with near-zero volatility
         returns = cleaned.pct_change().dropna()
         valid_assets = returns.std()[lambda x: x > 1e-6].index
         cleaned = cleaned[valid_assets]
-        if len(cleaned.columns) < 1:
-            raise ValueError("No valid assets after cleaning.")
+    
+        # If no valid assets remain, return empty (caller will handle)
         return cleaned
 
     def get_optimized_weights(
@@ -215,6 +221,19 @@ class PortfolioOptimizer:
 
         try:
             clean_prices = self.clean_price_data(prices)
+                # Handle case: no valid or too few assets after cleaning
+                if clean_prices.empty or len(clean_prices.columns) < 2:
+                    if last_weights is not None and not last_weights.empty:
+                        # Carry forward previous allocation
+                        return last_weights.reindex(prices.columns, fill_value=0.0), {
+                            "method": "carry_forward", "reason": "no_valid_assets"
+                        }
+                    else:
+                        # Fall back to equal-weight allocation
+                        return self._fallback_weights(prices.columns), {
+                            "method": "equal_weight", "reason": "no_valid_assets"
+                        }
+                
             assets = list(clean_prices.columns)
 
             # If we have too few assets, carry forward weights if possible
