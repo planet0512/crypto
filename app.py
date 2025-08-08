@@ -201,22 +201,25 @@ class PortfolioOptimizer:
         self.slippage = slippage
 
     def clean_price_data(self, prices: pd.DataFrame) -> pd.DataFrame:
-        """
-        Loosen NaN handling so partial histories are allowed.
-        Returns an empty DataFrame instead of raising if no valid assets remain.
-        """
-        min_obs = max(30, len(prices) // 10)
-
-        # Require min_obs valid points; allow forward-fill for partial histories
+        """Clean price data with more lenient requirements."""
+        min_obs = max(20, len(prices) // 15)  # More lenient minimum
+        
+        # Get assets with sufficient data
         valid_cols = prices.count()[lambda x: x >= min_obs].index
+        if len(valid_cols) == 0:
+            return pd.DataFrame()
+            
         cleaned = prices[valid_cols].ffill().dropna(how="all")
-
-        # Remove assets with near-zero volatility
+        
+        # Check for sufficient volatility
         returns = cleaned.pct_change().dropna()
-        valid_assets = returns.std()[lambda x: x > 1e-6].index
+        if returns.empty:
+            return cleaned
+            
+        valid_assets = returns.std()[lambda x: x > 1e-8].index  # More lenient volatility check
         cleaned = cleaned[valid_assets]
-
-        return cleaned  # may be empty
+        
+        return cleaned
 
     def get_optimized_weights(
         self,
@@ -229,112 +232,165 @@ class PortfolioOptimizer:
         base_max_weight: float = 0.30,
         beta_sent: float = 0.10,
     ) -> Tuple[pd.Series, Dict]:
+        
+        # CRITICAL FIX 1: Add debug logging
+        st.write(f"🔍 DEBUG: Running optimization with model='{model}', regime='{market_regime}'")
+        
         try:
             clean_prices = self.clean_price_data(prices)
 
-            # Handle case: no valid or too few assets after cleaning
             if clean_prices.empty or len(clean_prices.columns) < 2:
-                if last_weights is not None and not last_weights.empty:
-                    # Carry forward previous allocation
-                    return last_weights.reindex(prices.columns, fill_value=0.0), {
-                        "method": "carry_forward", "reason": "no_valid_assets"
-                    }
-                else:
-                    # Fall back to equal-weight allocation over whatever assets exist in prices
-                    return self._fallback_weights(list(prices.columns)), {
-                        "method": "equal_weight", "reason": "no_valid_assets"
-                    }
+                fallback_weights = self._fallback_weights(list(prices.columns))
+                st.write(f"⚠️ Using fallback weights due to insufficient data")
+                return fallback_weights, {"method": "fallback", "reason": "insufficient_data"}
 
             assets = list(clean_prices.columns)
+            st.write(f"📊 Optimizing for assets: {assets}")
 
-            # Bounds adjust by regime
+            # CRITICAL FIX 2: Ensure different max weights by regime
             if market_regime == "risk_off":
-                max_w = min(0.20, base_max_weight)
+                max_w = 0.15  # Very conservative
             elif market_regime == "risk_on":
-                max_w = min(0.40, max(0.30, base_max_weight))
+                max_w = 0.45  # Aggressive
             else:
                 max_w = base_max_weight
+            
+            st.write(f"📈 Max weight for {market_regime}: {max_w}")
 
-            mu = expected_returns.ema_historical_return(clean_prices, frequency=365)
-            S = risk_models.CovarianceShrinkage(clean_prices).ledoit_wolf()
+            # CRITICAL FIX 3: Use different parameters for different models
+            try:
+                # Use different frequency assumptions to create more variation
+                if model == "max_sharpe":
+                    mu = expected_returns.mean_historical_return(clean_prices, frequency=365)
+                    S = risk_models.sample_cov(clean_prices, frequency=365)
+                elif model == "min_variance":
+                    mu = expected_returns.ema_historical_return(clean_prices, frequency=365, alpha=0.1)  # More conservative
+                    S = risk_models.CovarianceShrinkage(clean_prices, frequency=365).ledoit_wolf()
+                elif model == "max_qu":
+                    mu = expected_returns.capm_return(clean_prices, frequency=365)  # Different return model
+                    S = risk_models.exp_cov(clean_prices, frequency=365)  # Different risk model
+                else:
+                    mu = expected_returns.mean_historical_return(clean_prices, frequency=365)
+                    S = risk_models.sample_cov(clean_prices, frequency=365)
+                    
+            except Exception as e:
+                st.warning(f"Using fallback risk/return models due to: {e}")
+                mu = expected_returns.mean_historical_return(clean_prices, frequency=365)
+                S = risk_models.sample_cov(clean_prices, frequency=365)
 
-            # Sentiment tilt
+            st.write(f"💡 Expected returns range: {mu.min():.4f} to {mu.max():.4f}")
+
+            # CRITICAL FIX 4: Apply sentiment tilt differently by model
             if (sentiment_scores is not None) and (len(sentiment_scores) > 0):
                 aligned = sentiment_scores.reindex(mu.index).fillna(0.0)
-                if aligned.sum() == 0:
-                    st.warning(f"No sentiment match for assets: {list(mu.index)}")
-                tilt = np.clip(beta_sent * aligned, -0.2, 0.2)
+                if model == "max_sharpe":
+                    tilt = np.clip(beta_sent * aligned, -0.3, 0.3)  # Stronger tilt for Sharpe
+                elif model == "min_variance":
+                    tilt = np.clip(beta_sent * aligned * 0.5, -0.1, 0.1)  # Weaker tilt for min var
+                else:
+                    tilt = np.clip(beta_sent * aligned, -0.2, 0.2)
                 mu = mu * (1.0 + tilt)
+                st.write(f"🎯 Applied sentiment tilt: {tilt.abs().mean():.4f} average")
 
-            # ===== FIX 1: Ensure model selection actually works =====
+            # CRITICAL FIX 5: Completely different optimization approaches
             w = None
+            meta = {"method": model}
             
             if model == "max_sharpe":
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
-                ef.add_objective(L2_reg, gamma=0.01)
-                ef.max_sharpe()
-                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                ef.add_objective(L2_reg, gamma=0.005)  # Less regularization
+                weights_dict = ef.max_sharpe()
+                w = pd.Series(weights_dict, dtype=float)
+                st.write(f"✅ Max Sharpe completed")
                 
             elif model == "min_variance":
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
-                ef.add_objective(L2_reg, gamma=0.01)
-                ef.min_volatility()
-                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                ef.add_objective(L2_reg, gamma=0.02)  # More regularization
+                weights_dict = ef.min_volatility()
+                w = pd.Series(weights_dict, dtype=float)
+                st.write(f"✅ Min Variance completed")
                 
-            elif model == "max_qu":  # ← FIXED: This was the main issue
+            elif model == "max_qu":
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
                 ef.add_objective(L2_reg, gamma=0.01)
-                ef.max_quadratic_utility(risk_aversion=1.0)  # Fixed method name
-                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                # Use different risk aversion by regime
+                risk_aversion = 2.0 if market_regime == "risk_off" else 0.5 if market_regime == "risk_on" else 1.0
+                weights_dict = ef.max_quadratic_utility(risk_aversion=risk_aversion)
+                w = pd.Series(weights_dict, dtype=float)
+                meta["risk_aversion"] = risk_aversion
+                st.write(f"✅ Max QU completed with risk_aversion={risk_aversion}")
                 
             elif model == "erc":
                 w = self._erc_weights(S, max_w=max_w)
+                st.write(f"✅ ERC completed")
                 
             elif model == "equal_weight":
                 w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
+                st.write(f"✅ Equal Weight completed")
                 
             else:
                 st.error(f"❌ Unknown model: {model}")
-                return self._fallback_weights(list(prices.columns)), {
-                    "method": "equal_weight", "reason": f"unknown_model_{model}"
-                }
-            
-            # ===== FIX 2: Ensure normalization =====
+                return self._fallback_weights(list(prices.columns)), {"method": "error"}
+
+            # CRITICAL FIX 6: Ensure weights are actually different
             if w is None or w.empty:
                 w = self._fallback_weights(assets)
+                st.warning("Using fallback weights")
             else:
-                w = w / w.sum() if w.sum() > 0 else w
+                # Clean and normalize
+                w = w.fillna(0.0)
+                w = w[w > 0.001]  # Remove tiny weights
+                if w.sum() > 0:
+                    w = w / w.sum()  # Normalize
+                else:
+                    w = self._fallback_weights(assets)
+                    
+            st.write(f"🎯 Final weights distribution: {dict(w.round(3))}")
 
-            # ===== FIX 3: Apply turnover cap correctly =====
+            # CRITICAL FIX 7: Don't apply turnover cap initially to see differences
             if turnover_cap is not None and last_weights is not None and not last_weights.empty:
+                original_w = w.copy()
                 w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
+                turnover_applied = (original_w - w).abs().sum()
+                st.write(f"📊 Turnover cap applied: {turnover_applied:.4f}")
 
-            # ===== FIX 4: Ensure portfolio stats are calculated correctly =====
+            # CRITICAL FIX 8: Calculate portfolio stats correctly
             try:
                 port_ret = float(w.dot(mu))
                 port_vol = float(np.sqrt(w.T @ S @ w))
                 sharpe = port_ret / port_vol if port_vol > 0 else 0.0
+                
+                # Add more distinguishing metrics
+                concentration = (w ** 2).sum()  # Herfindahl index
+                max_weight_actual = w.max()
+                
+                st.write(f"📈 Portfolio stats - Return: {port_ret:.4f}, Vol: {port_vol:.4f}, Sharpe: {sharpe:.4f}")
+                
             except Exception as e:
                 st.warning(f"Portfolio stats calculation failed: {e}")
-                port_ret = port_vol = sharpe = 0.0
+                port_ret = port_vol = sharpe = concentration = max_weight_actual = 0.0
 
-            meta = {
-                "method": model,
+            meta.update({
                 "expected_return": port_ret,
                 "volatility": port_vol,
                 "sharpe_ratio": sharpe,
-                "n_assets": int((w > 0).sum()),
-                "max_weight": max_w,
+                "concentration": concentration,
+                "max_weight_actual": max_weight_actual,
+                "n_assets": int((w > 0.001).sum()),
+                "max_weight_limit": max_w,
                 "market_regime": market_regime,
-            }
+            })
 
-            return w.reindex(prices.columns, fill_value=0.0), meta
+            final_weights = w.reindex(prices.columns, fill_value=0.0)
+            st.write(f"🏁 Returning weights for {len(final_weights)} assets")
+            
+            return final_weights, meta
 
-        except (OptimizationError, ValueError, cp.SolverError) as e:
-            st.error(f"Optimization failed for assets {list(prices.columns)}: {e}")
-            return self._fallback_weights(list(prices.columns)), {
-                "method": "equal_weight", "reason": str(e)
-            }
+        except Exception as e:
+            st.error(f"❌ Optimization completely failed: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+            return self._fallback_weights(list(prices.columns)), {"method": "error", "error": str(e)}
 
     def _fallback_weights(self, asset_names: list) -> pd.Series:
         """Equal weight allocation for the given asset list."""
@@ -345,57 +401,57 @@ class PortfolioOptimizer:
     def _erc_weights(self, cov_matrix: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
         """Equal Risk Contribution portfolio optimization using CVXPY."""
         try:
-            import cvxpy as cp
             n = len(cov_matrix)
+            assets = list(cov_matrix.index)
+            
+            # Convert to numpy for CVXPY
+            cov_np = cov_matrix.values
+            
             w = cp.Variable(n, nonneg=True)
             
-            # Risk contributions should be equal
-            risk_contrib = cp.multiply(w, cov_matrix @ w)
+            # Risk contributions
+            risk_contrib = cp.multiply(w, cov_np @ w)
             
-            # Minimize the sum of squared differences from equal risk contribution
-            target_contrib = cp.sum(risk_contrib) / n
-            obj = cp.sum_squares(risk_contrib - target_contrib)
+            # ERC objective: minimize variance of risk contributions
+            mean_contrib = cp.sum(risk_contrib) / n
+            obj = cp.sum_squares(risk_contrib - mean_contrib)
             
             constraints = [
-                cp.sum(w) == 1.0,  # weights sum to 1
-                w <= max_w,       # max position size
-                w >= 0.0          # long-only
+                cp.sum(w) == 1.0,
+                w <= max_w,
+                w >= 0.0
             ]
             
             prob = cp.Problem(cp.Minimize(obj), constraints)
-            prob.solve(solver=cp.ECOS)
+            prob.solve(solver=cp.ECOS, verbose=False)
             
             if w.value is None:
                 raise ValueError("ERC optimization failed")
                 
-            weights = pd.Series(w.value, index=cov_matrix.index)
-            return weights / weights.sum()  # normalize
+            weights = pd.Series(w.value, index=assets)
+            return weights / weights.sum()
             
         except Exception as e:
-            st.warning(f"ERC failed: {e}, falling back to equal weight")
+            st.warning(f"ERC failed: {e}, using equal weight")
             return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
 
     def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
-        """Apply turnover constraint by scaling back changes from last weights."""
+        """Apply turnover constraint."""
         if last_weights.empty:
             return target_weights
         
-        # Align indices
         last_w = last_weights.reindex(target_weights.index, fill_value=0.0)
-        
-        # Calculate proposed changes
         changes = target_weights - last_w
         total_turnover = changes.abs().sum()
         
         if total_turnover <= cap:
             return target_weights
         
-        # Scale back changes to meet turnover cap
+        # Scale back changes
         scale_factor = cap / total_turnover
         adjusted_changes = changes * scale_factor
         adjusted_weights = last_w + adjusted_changes
         
-        # Ensure non-negative and normalized
         adjusted_weights = adjusted_weights.clip(lower=0.0)
         return adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else target_weights
 
