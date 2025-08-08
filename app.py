@@ -312,7 +312,7 @@ class PortfolioOptimizer:
         return pd.Series(1.0 / len(asset_names), index=asset_names, dtype=float)
     
     def _erc_weights(self, cov_matrix: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
-    """Equal Risk Contribution portfolio optimization using CVXPY."""
+        """Equal Risk Contribution portfolio optimization using CVXPY."""
         try:
             import cvxpy as cp
             n = len(cov_matrix)
