@@ -234,7 +234,7 @@ class PortfolioOptimizer:
                         "method": "equal_weight", "reason": "no_valid_assets"
                     }
 
-        assets = list(clean_prices.columns)
+            assets = list(clean_prices.columns)
 
 
             # If we have too few assets, carry forward weights if possible
