@@ -310,6 +310,66 @@ class PortfolioOptimizer:
         if not asset_names:
             return pd.Series(dtype=float)
         return pd.Series(1.0 / len(asset_names), index=asset_names, dtype=float)
+    
+    def _erc_weights(self, cov_matrix: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
+    """Equal Risk Contribution portfolio optimization using CVXPY."""
+    try:
+        import cvxpy as cp
+        n = len(cov_matrix)
+        w = cp.Variable(n, nonneg=True)
+        
+        # Risk contributions should be equal
+        risk_contrib = cp.multiply(w, cov_matrix @ w)
+        
+        # Minimize the sum of squared differences from equal risk contribution
+        target_contrib = cp.sum(risk_contrib) / n
+        obj = cp.sum_squares(risk_contrib - target_contrib)
+        
+        constraints = [
+            cp.sum(w) == 1.0,  # weights sum to 1
+            w <= max_w,       # max position size
+            w >= 0.0          # long-only
+        ]
+        
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        prob.solve(solver=cp.ECOS)
+        
+        if w.value is None:
+            raise ValueError("ERC optimization failed")
+            
+        weights = pd.Series(w.value, index=cov_matrix.index)
+        return weights / weights.sum()  # normalize
+        
+    except Exception as e:
+        st.warning(f"ERC failed: {e}, falling back to equal weight")
+        return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
+
+# Add this method to your PortfolioOptimizer class
+
+def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
+        """Apply turnover constraint by scaling back changes from last weights."""
+        if last_weights.empty:
+            return target_weights
+        
+        # Align indices
+        last_w = last_weights.reindex(target_weights.index, fill_value=0.0)
+        
+        # Calculate proposed changes
+        changes = target_weights - last_w
+        total_turnover = changes.abs().sum()
+        
+        if total_turnover <= cap:
+            return target_weights
+        
+        # Scale back changes to meet turnover cap
+        scale_factor = cap / total_turnover
+        adjusted_changes = changes * scale_factor
+        adjusted_weights = last_w + adjusted_changes
+        
+        # Ensure non-negative and normalized
+        adjusted_weights = adjusted_weights.clip(lower=0.0)
+        return adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else target_weights
+
 
 # ------------------------------------------------------------------------------#
 # Backtest
@@ -428,60 +488,47 @@ class BacktestEngine:
         st.success("✅ Backtest completed successfully!")
         return strategy_returns, allocation_df, metrics
 
-    def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
-        if returns.empty: return {}
-        r = pd.to_numeric(returns, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-        if r.empty: return {}
-        n = len(r)
-        cum = np.prod(1.0 + r.values)
-        ann_ret = cum ** (365.0 / len(r)) - 1.0 if cum > 0 else 0.0
-        ann_vol = float(np.nan_to_num(r.std(), nan=0.0)) * np.sqrt(365.0)
-        sharpe = (ann_ret / ann_vol) if (ann_vol > 0 and np.isfinite(ann_ret)) else 0.0
-
+   def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
+    if returns.empty: 
+        return {"error": "No returns to analyze"}
+        
+    # Clean returns more aggressively
+    r = pd.to_numeric(returns, errors="coerce")
+    r = r.replace([np.inf, -np.inf], np.nan).dropna()
+    
+    if len(r) < 10:  # Need minimum observations
+        return {"error": "Insufficient return observations"}
+        
+    # Safer calculations with bounds checking
+    try:
+        cum_ret = np.prod(1.0 + r.clip(-0.99, 3.0))  # Clip extreme returns
+        periods_per_year = 365.0
+        years = len(r) / periods_per_year
+        
+        ann_ret = (cum_ret ** (1.0 / years) - 1.0) if cum_ret > 0 and years > 0 else 0.0
+        ann_vol = r.std() * np.sqrt(periods_per_year) if len(r) > 1 else 0.0
+        
+        # Safer Sharpe calculation
+        sharpe = (ann_ret / ann_vol) if (ann_vol > 1e-6 and np.isfinite(ann_ret) and np.isfinite(ann_vol)) else 0.0
+        
+        # Safer drawdown calculation
         cum_curve = (1 + r).cumprod()
-        drawdown = (cum_curve - cum_curve.cummax()) / cum_curve.cummax()
-        max_dd = float(drawdown.min())
-
-        downside = r[r < 0]
-        down_vol = (downside.std() * np.sqrt(365.0)) if len(downside) else 0.0
-        sortino = (ann_ret / down_vol) if (down_vol > 0 and np.isfinite(ann_ret)) else 0.0
-
-        bench = {}
-        if "BTC" in prices_df.columns:
-            btc = compute_returns_from_data(prices_df[["BTC"]])["BTC"]
-            # align BTC exactly to the strategy period
-            btc = btc.reindex(r.index).dropna()
-            btc = pd.to_numeric(btc, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-            if len(btc) > 0:
-                cum_btc = float(np.prod(1.0 + btc.values))
-                btc_ann_ret = (cum_btc ** (365.0 / len(btc)) - 1.0) if cum_btc > 0 else np.nan
-                btc_vol = float(np.nan_to_num(btc.std(), nan=0.0)) * np.sqrt(365.0)
-                btc_sharpe = (btc_ann_ret / btc_vol) if (btc_vol > 0 and np.isfinite(btc_ann_ret)) else 0.0
-                btc_curve = (1 + btc).cumprod()
-                btc_dd = (btc_curve - btc_curve.cummax()) / btc_curve.cummax()
-                bench = {
-                    "btc_annual_return": btc_ann_ret,
-                    "btc_volatility": btc_vol,
-                    "btc_sharpe_ratio": btc_sharpe,
-                    "btc_max_drawdown": float(btc_dd.min()),
-                    "excess_return": (ann_ret - btc_ann_ret) if np.isfinite(ann_ret) and np.isfinite(btc_ann_ret) else np.nan,
-                    "excess_sharpe": sharpe - btc_sharpe,
-                }
-
-        total_txn = float(sum(transaction_costs))
-        avg_annual_txn = total_txn * (365.0 / n) if n > 0 else 0.0
-
+        running_max = cum_curve.expanding().max()
+        drawdown = (cum_curve - running_max) / running_max
+        max_dd = drawdown.min()
+        
         return {
-            "total_return": cum - 1.0 if np.isfinite(cum) else np.nan,
+            "total_return": cum_ret - 1.0,
             "annualized_return": ann_ret,
             "annualized_volatility": ann_vol,
             "sharpe_ratio": sharpe,
-            "sortino_ratio": sortino,
             "max_drawdown": max_dd,
-            "total_transaction_costs": total_txn,
-            "avg_annual_transaction_cost": avg_annual_txn,
-            **bench,
+            "observation_count": len(r),
+            "years_analyzed": years,
         }
+        
+    except Exception as e:
+        return {"error": f"Metrics calculation failed: {e}"}
 
 # ------------------------------------------------------------------------------#
 # Charts
