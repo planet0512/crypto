@@ -189,14 +189,17 @@ class PortfolioOptimizer:
         self.slippage = slippage
 
     def clean_price_data(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Loosen NaN handling so partial histories are allowed."""
         min_obs = max(30, len(prices) // 10)
-        valid_cols = prices.dropna().count()[lambda x: x >= min_obs].index
-        if len(valid_cols) < 2:
-            raise ValueError("Insufficient valid price data")
+        # Only require min_obs valid points, not fully NaN-free
+        valid_cols = prices.count()[lambda x: x >= min_obs].index
         cleaned = prices[valid_cols].ffill().dropna(how="all")
         returns = cleaned.pct_change().dropna()
         valid_assets = returns.std()[lambda x: x > 1e-6].index
-        return cleaned[valid_assets]
+        cleaned = cleaned[valid_assets]
+        if len(cleaned.columns) < 1:
+            raise ValueError("No valid assets after cleaning.")
+        return cleaned
 
     def get_optimized_weights(
         self,
@@ -213,27 +216,38 @@ class PortfolioOptimizer:
         try:
             clean_prices = self.clean_price_data(prices)
             assets = list(clean_prices.columns)
+
+            # If we have too few assets, carry forward weights if possible
             if len(assets) < 2:
-                return self._fallback_weights(prices.columns), {"method":"equal_weight","reason":"insufficient_assets"}
+                if last_weights is not None and not last_weights.empty:
+                    return last_weights.reindex(prices.columns, fill_value=0.0), {
+                        "method": "carry_forward", "reason": "insufficient_assets"
+                    }
+                else:
+                    return self._fallback_weights(prices.columns), {
+                        "method":"equal_weight","reason":"insufficient_assets"
+                    }
 
             # Bounds adjust by regime
             if market_regime == "risk_off":
-                max_w = min(0.20, base_max_weight)  # tighten
+                max_w = min(0.20, base_max_weight)
             elif market_regime == "risk_on":
-                max_w = min(0.40, max(0.30, base_max_weight))  # loosen slightly
+                max_w = min(0.40, max(0.30, base_max_weight))
             else:
                 max_w = base_max_weight
 
             mu = expected_returns.ema_historical_return(clean_prices, frequency=365)
             S = risk_models.CovarianceShrinkage(clean_prices).ledoit_wolf()
 
-            # Per-asset sentiment tilt of mu
+            # Sentiment tilt
             if (sentiment_scores is not None) and (len(sentiment_scores) > 0):
                 aligned = sentiment_scores.reindex(mu.index).fillna(0.0)
-                tilt = np.clip(beta_sent * aligned, -0.2, 0.2)  # cap the tilt
+                if aligned.sum() == 0:
+                    st.warning(f"No sentiment match for assets: {list(mu.index)}")
+                tilt = np.clip(beta_sent * aligned, -0.2, 0.2)
                 mu = mu * (1.0 + tilt)
 
-            # Classical models via PyPortfolioOpt
+            # Classical models
             if model in {"max_sharpe", "min_variance", "max_qu"}:
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
                 ef.add_objective(L2_reg, gamma=0.01)
@@ -252,13 +266,13 @@ class PortfolioOptimizer:
                 w = self._erc_weights(S, max_w=max_w)
 
             elif model == "equal_weight":
-                w = pd.Series(1.0/len(assets), index=assets, dtype=float)
+                w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
 
             else:
                 raise ValueError(f"Unknown model: {model}")
 
-            # Optional turnover cap (L1 distance from last weights)
-            if turnover_cap is not None and last_weights is not None and len(last_weights) > 0:
+            # Apply turnover cap only if we have last weights
+            if turnover_cap is not None and last_weights is not None and not last_weights.empty:
                 w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
 
             # Portfolio stats
@@ -275,51 +289,15 @@ class PortfolioOptimizer:
                 "max_weight": max_w,
                 "market_regime": market_regime,
             }
+
             return w.reindex(prices.columns, fill_value=0.0), meta
 
         except (OptimizationError, ValueError, cp.SolverError) as e:
-            st.warning(f"Optimization failed: {e}")
-            return self._fallback_weights(prices.columns), {"method":"equal_weight","reason":str(e)}
+            st.error(f"Optimization failed for assets {list(prices.columns)}: {e}")
+            return self._fallback_weights(prices.columns), {
+                "method":"equal_weight","reason":str(e)
+            }
 
-    def _erc_weights(self, cov: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
-        """Equal Risk Contribution using cvxpy."""
-        Sigma = cov.values
-        n = Sigma.shape[0]
-        w = cp.Variable(n)
-        # Risk contributions: RC_i = w_i * (Sigma w)_i
-        Sigma_w = Sigma @ w
-        RC = cp.multiply(w, Sigma_w)
-        target = (1.0 / n) * cp.quad_form(w, Sigma)  # proxy
-        # Minimize squared deviations of RC from equal contribution
-        obj = cp.Minimize(cp.sum_squares(RC - target))
-        constraints = [
-            w >= 0,
-            cp.sum(w) == 1,
-            w <= max_w
-        ]
-        prob = cp.Problem(obj, constraints)
-        prob.solve(solver=cp.SCS, verbose=False)
-        w_val = w.value
-        if w_val is None:
-            # fallback to equal weight
-            w_val = np.ones(n) / n
-        series = pd.Series(w_val, index=cov.columns, dtype=float)
-        # renorm for numerical safety
-        return series / series.sum()
-
-    def _apply_turnover_cap(self, w_prev: pd.Series, w_new: pd.Series, cap: float) -> pd.Series:
-        """Project w_new toward w_prev so that L1 turnover <= cap."""
-        diff = (w_new - w_prev).abs().sum()
-        if diff <= cap:
-            return w_new
-        # simple linear interpolation toward previous weights
-        alpha = cap / diff
-        w_adj = w_prev + alpha * (w_new - w_prev)
-        w_adj = w_adj.clip(lower=0.0)
-        return w_adj / w_adj.sum()
-
-    def _fallback_weights(self, asset_names) -> pd.Series:
-        return pd.Series(1.0 / max(1, len(asset_names)), index=asset_names, dtype=float)
 
 # ------------------------------------------------------------------------------#
 # Backtest
