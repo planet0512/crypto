@@ -313,36 +313,36 @@ class PortfolioOptimizer:
     
     def _erc_weights(self, cov_matrix: pd.DataFrame, max_w: float = 0.30) -> pd.Series:
     """Equal Risk Contribution portfolio optimization using CVXPY."""
-    try:
-        import cvxpy as cp
-        n = len(cov_matrix)
-        w = cp.Variable(n, nonneg=True)
-        
-        # Risk contributions should be equal
-        risk_contrib = cp.multiply(w, cov_matrix @ w)
-        
-        # Minimize the sum of squared differences from equal risk contribution
-        target_contrib = cp.sum(risk_contrib) / n
-        obj = cp.sum_squares(risk_contrib - target_contrib)
-        
-        constraints = [
-            cp.sum(w) == 1.0,  # weights sum to 1
-            w <= max_w,       # max position size
-            w >= 0.0          # long-only
-        ]
-        
-        prob = cp.Problem(cp.Minimize(obj), constraints)
-        prob.solve(solver=cp.ECOS)
-        
-        if w.value is None:
-            raise ValueError("ERC optimization failed")
+        try:
+            import cvxpy as cp
+            n = len(cov_matrix)
+            w = cp.Variable(n, nonneg=True)
             
-        weights = pd.Series(w.value, index=cov_matrix.index)
-        return weights / weights.sum()  # normalize
-        
-    except Exception as e:
-        st.warning(f"ERC failed: {e}, falling back to equal weight")
-        return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
+            # Risk contributions should be equal
+            risk_contrib = cp.multiply(w, cov_matrix @ w)
+            
+            # Minimize the sum of squared differences from equal risk contribution
+            target_contrib = cp.sum(risk_contrib) / n
+            obj = cp.sum_squares(risk_contrib - target_contrib)
+            
+            constraints = [
+                cp.sum(w) == 1.0,  # weights sum to 1
+                w <= max_w,       # max position size
+                w >= 0.0          # long-only
+            ]
+            
+            prob = cp.Problem(cp.Minimize(obj), constraints)
+            prob.solve(solver=cp.ECOS)
+            
+            if w.value is None:
+                raise ValueError("ERC optimization failed")
+                
+            weights = pd.Series(w.value, index=cov_matrix.index)
+            return weights / weights.sum()  # normalize
+            
+        except Exception as e:
+            st.warning(f"ERC failed: {e}, falling back to equal weight")
+            return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
 
 # Add this method to your PortfolioOptimizer class
 
