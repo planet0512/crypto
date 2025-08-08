@@ -348,9 +348,7 @@ class PortfolioOptimizer:
             st.warning(f"ERC failed: {e}, falling back to equal weight")
             return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
 
-# Add this method to your PortfolioOptimizer class
-
-def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
+    def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
         """Apply turnover constraint by scaling back changes from last weights."""
         if last_weights.empty:
             return target_weights
@@ -373,6 +371,7 @@ def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series
         # Ensure non-negative and normalized
         adjusted_weights = adjusted_weights.clip(lower=0.0)
         return adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else target_weights
+
 
 
 # ------------------------------------------------------------------------------#
