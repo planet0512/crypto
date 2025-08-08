@@ -182,17 +182,6 @@ def get_market_sent_z(sent_df: pd.DataFrame, date, window: int = 90) -> float:
 # ------------------------------------------------------------------------------#
 # Optimizers
 # ------------------------------------------------------------------------------#
-    """Add this function to debug model selection issues"""
-    st.sidebar.markdown("**Debug Info**")
-    if 'last_model_used' in st.session_state:
-        st.sidebar.text(f"Last model: {st.session_state.last_model_used}")
-    if 'last_weights_sum' in st.session_state:
-        st.sidebar.text(f"Weights sum: {st.session_state.last_weights_sum:.4f}")
-    if 'optimization_count' in st.session_state:
-        st.sidebar.text(f"Optimizations: {st.session_state.optimization_count}")
-
-# CACHING FIX: Update your caching decorators
-
 class PortfolioOptimizer:
     def __init__(self, transaction_cost: float = 0.0025, max_weight: float = 0.30, slippage: float = 0.0005):
         self.transaction_cost = transaction_cost
@@ -265,57 +254,38 @@ class PortfolioOptimizer:
                 tilt = np.clip(beta_sent * aligned, -0.2, 0.2)
                 mu = mu * (1.0 + tilt)
 
-            # ===== FIX 1: Ensure model selection actually works =====
-            w = None
-            
-            if model == "max_sharpe":
+            # Classical models
+            if model in {"max_sharpe", "min_variance", "max_qu"}:
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
                 ef.add_objective(L2_reg, gamma=0.01)
-                ef.max_sharpe()
+
+                if model == "max_sharpe":
+                    ef.max_sharpe()
+                elif model == "min_variance":
+                    ef.min_volatility()
+                else:
+                    ef.max_quadratic_utility(risk_aversion=1.0)
+
                 w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
-                
-            elif model == "min_variance":
-                ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
-                ef.add_objective(L2_reg, gamma=0.01)
-                ef.min_volatility()
-                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
-                
-            elif model == "max_qu":  # ← FIXED: This was the main issue
-                ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
-                ef.add_objective(L2_reg, gamma=0.01)
-                ef.max_quadratic_utility(risk_aversion=1.0)  # Fixed method name
-                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
-                
-            elif model == "erc":
-                w = self._erc_weights(S, max_w=max_w)
-                
-            elif model == "equal_weight":
-                w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
-                
-            else:
-                st.error(f"❌ Unknown model: {model}")
-                return self._fallback_weights(list(prices.columns)), {
-                    "method": "equal_weight", "reason": f"unknown_model_{model}"
-                }
-            
-            # ===== FIX 2: Ensure normalization =====
-            if w is None or w.empty:
-                w = self._fallback_weights(assets)
-            else:
                 w = w / w.sum() if w.sum() > 0 else w
 
-            # ===== FIX 3: Apply turnover cap correctly =====
+            elif model == "erc":
+                w = self._erc_weights(S, max_w=max_w)
+
+            elif model == "equal_weight":
+                w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
+
+            else:
+                raise ValueError(f"Unknown model: {model}")
+
+            # Apply turnover cap only if we have last weights
             if turnover_cap is not None and last_weights is not None and not last_weights.empty:
                 w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
 
-            # ===== FIX 4: Ensure portfolio stats are calculated correctly =====
-            try:
-                port_ret = float(w.dot(mu))
-                port_vol = float(np.sqrt(w.T @ S @ w))
-                sharpe = port_ret / port_vol if port_vol > 0 else 0.0
-            except Exception as e:
-                st.warning(f"Portfolio stats calculation failed: {e}")
-                port_ret = port_vol = sharpe = 0.0
+            # Portfolio stats
+            port_ret = float(w.dot(mu))
+            port_vol = float(np.sqrt(w.T @ S @ w))
+            sharpe = port_ret / port_vol if port_vol > 0 else 0.0
 
             meta = {
                 "method": model,
@@ -374,7 +344,9 @@ class PortfolioOptimizer:
             st.warning(f"ERC failed: {e}, falling back to equal weight")
             return pd.Series(1.0/len(cov_matrix), index=cov_matrix.index)
 
-    def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
+# Add this method to your PortfolioOptimizer class
+
+def _apply_turnover_cap(self, last_weights: pd.Series, target_weights: pd.Series, cap: float) -> pd.Series:
         """Apply turnover constraint by scaling back changes from last weights."""
         if last_weights.empty:
             return target_weights
@@ -399,8 +371,9 @@ class PortfolioOptimizer:
         return adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else target_weights
 
 
-# ===== FIX 5: Ensure the backtest engine processes model choice correctly =====
-
+# ------------------------------------------------------------------------------#
+# Backtest
+# ------------------------------------------------------------------------------#
 class BacktestEngine:
     def __init__(self, optimizer: PortfolioOptimizer, config: Config):
         self.optimizer = optimizer
@@ -450,15 +423,10 @@ class BacktestEngine:
             # Pull per-asset sentiment snapshot at cur
             per_asset_sent = extract_per_asset_sentiment(sent_df, cur).reindex(assets).fillna(0.0)
 
-            # ===== FIX 6: Properly handle model selection =====
+            # Choose model (allow override via UI)
+            model = model_choice
             if model_choice == "auto":
                 model = {"risk_on": "max_sharpe", "risk_off": "min_variance", "neutral": "max_qu"}[regime]
-            else:
-                model = model_choice  # Use the exact model selected by user
-
-            # Debug info (only show on first iteration to avoid spam)
-            if i == 0:
-                st.info(f"🎯 Using model: {model} (selected: {model_choice}, regime: {regime})")
 
             target_w, meta = self.optimizer.get_optimized_weights(
                 hist_prices,
@@ -481,6 +449,7 @@ class BacktestEngine:
 
             # Realize period returns (apply txn cost on first day)
             period_rets = daily_returns.loc[cur:nxt]
+            # Require at least 2 observations in the period to avoid zero-std / NaN KPIs
             if period_rets is None or len(period_rets) < 2:
                 continue
             
@@ -519,11 +488,9 @@ class BacktestEngine:
         st.success("✅ Backtest completed successfully!")
         return strategy_returns, allocation_df, metrics
 
-
     def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
         if returns.empty: 
             return {"error": "No returns to analyze"}
-            
         r = pd.to_numeric(returns, errors="coerce")
         r = r.replace([np.inf, -np.inf], np.nan).dropna()
     
@@ -548,54 +515,17 @@ class BacktestEngine:
             drawdown = (cum_curve - running_max) / running_max
             max_dd = drawdown.min()
             
-            # Benchmark comparison (BTC if available)
-            bench = {}
-            if "BTC" in prices_df.columns:
-                btc = compute_returns_from_data(prices_df[["BTC"]])["BTC"]
-                # align BTC exactly to the strategy period
-                btc = btc.reindex(r.index).dropna()
-                btc = pd.to_numeric(btc, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-                if len(btc) > 0:
-                    cum_btc = float(np.prod(1.0 + btc.values))
-                    btc_ann_ret = (cum_btc ** (365.0 / len(btc)) - 1.0) if cum_btc > 0 else np.nan
-                    btc_vol = float(np.nan_to_num(btc.std(), nan=0.0)) * np.sqrt(365.0)
-                    btc_sharpe = (btc_ann_ret / btc_vol) if (btc_vol > 0 and np.isfinite(btc_ann_ret)) else 0.0
-                    btc_curve = (1 + btc).cumprod()
-                    btc_dd = (btc_curve - btc_curve.cummax()) / btc_curve.cummax()
-                    bench = {
-                        "btc_annual_return": btc_ann_ret,
-                        "btc_volatility": btc_vol,
-                        "btc_sharpe_ratio": btc_sharpe,
-                        "btc_max_drawdown": float(btc_dd.min()),
-                        "excess_return": (ann_ret - btc_ann_ret) if np.isfinite(ann_ret) and np.isfinite(btc_ann_ret) else np.nan,
-                        "excess_sharpe": sharpe - btc_sharpe,
-                    }
-
-            # Transaction cost analysis
-            total_txn = float(sum(transaction_costs))
-            avg_annual_txn = total_txn * (365.0 / len(r)) if len(r) > 0 else 0.0
-
-            # Downside risk metrics
-            downside = r[r < 0]
-            down_vol = (downside.std() * np.sqrt(365.0)) if len(downside) > 1 else 0.0
-            sortino = (ann_ret / down_vol) if (down_vol > 0 and np.isfinite(ann_ret)) else 0.0
-
             return {
                 "total_return": cum_ret - 1.0,
                 "annualized_return": ann_ret,
                 "annualized_volatility": ann_vol,
                 "sharpe_ratio": sharpe,
-                "sortino_ratio": sortino,
                 "max_drawdown": max_dd,
-                "total_transaction_costs": total_txn,
-                "avg_annual_transaction_cost": avg_annual_txn,
                 "observation_count": len(r),
                 "years_analyzed": years,
-                **bench,
             }
             
         except Exception as e:
-            st.error(f"❌ Performance metrics calculation failed: {e}")
             return {"error": f"Metrics calculation failed: {e}"}
 
 # ------------------------------------------------------------------------------#
@@ -721,7 +651,6 @@ def main():
     config = Config()
     optimizer = PortfolioOptimizer(max_weight=config.MAX_POSITION_SIZE, transaction_cost=config.TRANSACTION_COST, slippage=config.SLIPPAGE)
     engine = BacktestEngine(optimizer, config)
-    
 
     # Sidebar controls
     with st.sidebar:
