@@ -488,9 +488,9 @@ class BacktestEngine:
         st.success("✅ Backtest completed successfully!")
         return strategy_returns, allocation_df, metrics
 
-   def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
-       if returns.empty: 
-           return {"error": "No returns to analyze"}
+    def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
+        if returns.empty: 
+            return {"error": "No returns to analyze"}
         r = pd.to_numeric(returns, errors="coerce")
         r = r.replace([np.inf, -np.inf], np.nan).dropna()
     
