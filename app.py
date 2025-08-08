@@ -489,46 +489,44 @@ class BacktestEngine:
         return strategy_returns, allocation_df, metrics
 
    def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
-    if returns.empty: 
-        return {"error": "No returns to analyze"}
-        
-    # Clean returns more aggressively
-    r = pd.to_numeric(returns, errors="coerce")
-    r = r.replace([np.inf, -np.inf], np.nan).dropna()
+       if returns.empty: 
+           return {"error": "No returns to analyze"}
+        r = pd.to_numeric(returns, errors="coerce")
+        r = r.replace([np.inf, -np.inf], np.nan).dropna()
     
-    if len(r) < 10:  # Need minimum observations
-        return {"error": "Insufficient return observations"}
-        
-    # Safer calculations with bounds checking
-    try:
-        cum_ret = np.prod(1.0 + r.clip(-0.99, 3.0))  # Clip extreme returns
-        periods_per_year = 365.0
-        years = len(r) / periods_per_year
-        
-        ann_ret = (cum_ret ** (1.0 / years) - 1.0) if cum_ret > 0 and years > 0 else 0.0
-        ann_vol = r.std() * np.sqrt(periods_per_year) if len(r) > 1 else 0.0
-        
-        # Safer Sharpe calculation
-        sharpe = (ann_ret / ann_vol) if (ann_vol > 1e-6 and np.isfinite(ann_ret) and np.isfinite(ann_vol)) else 0.0
-        
-        # Safer drawdown calculation
-        cum_curve = (1 + r).cumprod()
-        running_max = cum_curve.expanding().max()
-        drawdown = (cum_curve - running_max) / running_max
-        max_dd = drawdown.min()
-        
-        return {
-            "total_return": cum_ret - 1.0,
-            "annualized_return": ann_ret,
-            "annualized_volatility": ann_vol,
-            "sharpe_ratio": sharpe,
-            "max_drawdown": max_dd,
-            "observation_count": len(r),
-            "years_analyzed": years,
-        }
-        
-    except Exception as e:
-        return {"error": f"Metrics calculation failed: {e}"}
+        if len(r) < 10:  # Need minimum observations
+            return {"error": "Insufficient return observations"}
+            
+        # Safer calculations with bounds checking
+        try:
+            cum_ret = np.prod(1.0 + r.clip(-0.99, 3.0))  # Clip extreme returns
+            periods_per_year = 365.0
+            years = len(r) / periods_per_year
+            
+            ann_ret = (cum_ret ** (1.0 / years) - 1.0) if cum_ret > 0 and years > 0 else 0.0
+            ann_vol = r.std() * np.sqrt(periods_per_year) if len(r) > 1 else 0.0
+            
+            # Safer Sharpe calculation
+            sharpe = (ann_ret / ann_vol) if (ann_vol > 1e-6 and np.isfinite(ann_ret) and np.isfinite(ann_vol)) else 0.0
+            
+            # Safer drawdown calculation
+            cum_curve = (1 + r).cumprod()
+            running_max = cum_curve.expanding().max()
+            drawdown = (cum_curve - running_max) / running_max
+            max_dd = drawdown.min()
+            
+            return {
+                "total_return": cum_ret - 1.0,
+                "annualized_return": ann_ret,
+                "annualized_volatility": ann_vol,
+                "sharpe_ratio": sharpe,
+                "max_drawdown": max_dd,
+                "observation_count": len(r),
+                "years_analyzed": years,
+            }
+            
+        except Exception as e:
+            return {"error": f"Metrics calculation failed: {e}"}
 
 # ------------------------------------------------------------------------------#
 # Charts
