@@ -218,20 +218,24 @@ class PortfolioOptimizer:
         base_max_weight: float = 0.30,
         beta_sent: float = 0.10,
     ) -> Tuple[pd.Series, Dict]:
-
         try:
             clean_prices = self.clean_price_data(prices)
+    
+            # Handle case: no valid or too few assets after cleaning
             if clean_prices.empty or len(clean_prices.columns) < 2:
                 if last_weights is not None and not last_weights.empty:
-                        # Carry forward previous allocation
+                    # Carry forward previous allocation
                     return last_weights.reindex(prices.columns, fill_value=0.0), {
-                            "method": "carry_forward", "reason": "no_valid_assets"}
+                        "method": "carry_forward", "reason": "no_valid_assets"
+                    }
                 else:
-                        # Fall back to equal-weight allocation
+                    # Fall back to equal-weight allocation
                     return self._fallback_weights(prices.columns), {
-                            "method": "equal_weight", "reason": "no_valid_assets"}
-                
-            assets = list(clean_prices.columns)
+                        "method": "equal_weight", "reason": "no_valid_assets"
+                    }
+
+        assets = list(clean_prices.columns)
+
 
             # If we have too few assets, carry forward weights if possible
             if len(assets) < 2:
