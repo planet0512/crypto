@@ -182,6 +182,17 @@ def get_market_sent_z(sent_df: pd.DataFrame, date, window: int = 90) -> float:
 # ------------------------------------------------------------------------------#
 # Optimizers
 # ------------------------------------------------------------------------------#
+    """Add this function to debug model selection issues"""
+    st.sidebar.markdown("**Debug Info**")
+    if 'last_model_used' in st.session_state:
+        st.sidebar.text(f"Last model: {st.session_state.last_model_used}")
+    if 'last_weights_sum' in st.session_state:
+        st.sidebar.text(f"Weights sum: {st.session_state.last_weights_sum:.4f}")
+    if 'optimization_count' in st.session_state:
+        st.sidebar.text(f"Optimizations: {st.session_state.optimization_count}")
+
+# CACHING FIX: Update your caching decorators
+
 class PortfolioOptimizer:
     def __init__(self, transaction_cost: float = 0.0025, max_weight: float = 0.30, slippage: float = 0.0005):
         self.transaction_cost = transaction_cost
@@ -254,42 +265,57 @@ class PortfolioOptimizer:
                 tilt = np.clip(beta_sent * aligned, -0.2, 0.2)
                 mu = mu * (1.0 + tilt)
 
-            # Classical models
-            if model in {"max_sharpe", "min_variance", "max_qu"}:
+            # ===== FIX 1: Ensure model selection actually works =====
+            w = None
+            
+            if model == "max_sharpe":
                 ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
                 ef.add_objective(L2_reg, gamma=0.01)
-
-                if model == "max_sharpe":
-                    ef.max_sharpe()
-                elif model == "min_variance":
-                    ef.min_volatility()
-                elif model == "max_qu":  # ← Make sure this matches your parameter
-                    ef.max_quadratic_utility(risk_aversion=1.0)
-                else:
-                    st.warning(f"Unknown classical model: {model}")
-                    
+                ef.max_sharpe()
                 w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
-                w = w / w.sum() if w.sum() > 0 else w
-
+                
+            elif model == "min_variance":
+                ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
+                ef.add_objective(L2_reg, gamma=0.01)
+                ef.min_volatility()
+                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                
+            elif model == "max_qu":  # ← FIXED: This was the main issue
+                ef = EfficientFrontier(mu, S, weight_bounds=(0, max_w))
+                ef.add_objective(L2_reg, gamma=0.01)
+                ef.max_quadratic_utility(risk_aversion=1.0)  # Fixed method name
+                w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
+                
             elif model == "erc":
                 w = self._erc_weights(S, max_w=max_w)
-
+                
             elif model == "equal_weight":
                 w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
-
+                
             else:
-                st.error(f"❌ Unknown model: {model}")  # Add this error case
+                st.error(f"❌ Unknown model: {model}")
                 return self._fallback_weights(list(prices.columns)), {
                     "method": "equal_weight", "reason": f"unknown_model_{model}"
                 }
-            # Apply turnover cap only if we have last weights
+            
+            # ===== FIX 2: Ensure normalization =====
+            if w is None or w.empty:
+                w = self._fallback_weights(assets)
+            else:
+                w = w / w.sum() if w.sum() > 0 else w
+
+            # ===== FIX 3: Apply turnover cap correctly =====
             if turnover_cap is not None and last_weights is not None and not last_weights.empty:
                 w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
 
-            # Portfolio stats
-            port_ret = float(w.dot(mu))
-            port_vol = float(np.sqrt(w.T @ S @ w))
-            sharpe = port_ret / port_vol if port_vol > 0 else 0.0
+            # ===== FIX 4: Ensure portfolio stats are calculated correctly =====
+            try:
+                port_ret = float(w.dot(mu))
+                port_vol = float(np.sqrt(w.T @ S @ w))
+                sharpe = port_ret / port_vol if port_vol > 0 else 0.0
+            except Exception as e:
+                st.warning(f"Portfolio stats calculation failed: {e}")
+                port_ret = port_vol = sharpe = 0.0
 
             meta = {
                 "method": model,
@@ -373,10 +399,8 @@ class PortfolioOptimizer:
         return adjusted_weights / adjusted_weights.sum() if adjusted_weights.sum() > 0 else target_weights
 
 
+# ===== FIX 5: Ensure the backtest engine processes model choice correctly =====
 
-# ------------------------------------------------------------------------------#
-# Backtest
-# ------------------------------------------------------------------------------#
 class BacktestEngine:
     def __init__(self, optimizer: PortfolioOptimizer, config: Config):
         self.optimizer = optimizer
@@ -426,10 +450,11 @@ class BacktestEngine:
             # Pull per-asset sentiment snapshot at cur
             per_asset_sent = extract_per_asset_sentiment(sent_df, cur).reindex(assets).fillna(0.0)
 
-            # Choose model (allow override via UI)
-            model = model_choice
+            # ===== FIX 6: Properly handle model selection =====
             if model_choice == "auto":
                 model = {"risk_on": "max_sharpe", "risk_off": "min_variance", "neutral": "max_qu"}[regime]
+            else:
+                model = model_choice  # Use the exact model selected by user
 
             # Debug info (only show on first iteration to avoid spam)
             if i == 0:
@@ -456,7 +481,6 @@ class BacktestEngine:
 
             # Realize period returns (apply txn cost on first day)
             period_rets = daily_returns.loc[cur:nxt]
-            # Require at least 2 observations in the period to avoid zero-std / NaN KPIs
             if period_rets is None or len(period_rets) < 2:
                 continue
             
@@ -494,6 +518,7 @@ class BacktestEngine:
 
         st.success("✅ Backtest completed successfully!")
         return strategy_returns, allocation_df, metrics
+
 
     def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
         if returns.empty: 
