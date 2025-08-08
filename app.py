@@ -182,6 +182,7 @@ def get_market_sent_z(sent_df: pd.DataFrame, date, window: int = 90) -> float:
 # ------------------------------------------------------------------------------#
 # Optimizers
 # ------------------------------------------------------------------------------#
+def debug_model_selection():
     """Add this function to debug model selection issues"""
     st.sidebar.markdown("**Debug Info**")
     if 'last_model_used' in st.session_state:
