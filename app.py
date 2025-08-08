@@ -263,9 +263,11 @@ class PortfolioOptimizer:
                     ef.max_sharpe()
                 elif model == "min_variance":
                     ef.min_volatility()
-                else:
+                elif model == "max_qu":  # ← Make sure this matches your parameter
                     ef.max_quadratic_utility(risk_aversion=1.0)
-
+                else:
+                    st.warning(f"Unknown classical model: {model}")
+                    
                 w = pd.Series(ef.clean_weights(cutoff=0.005), dtype=float)
                 w = w / w.sum() if w.sum() > 0 else w
 
@@ -276,8 +278,10 @@ class PortfolioOptimizer:
                 w = pd.Series(1.0 / len(assets), index=assets, dtype=float)
 
             else:
-                raise ValueError(f"Unknown model: {model}")
-
+                st.error(f"❌ Unknown model: {model}")  # Add this error case
+                return self._fallback_weights(list(prices.columns)), {
+                    "method": "equal_weight", "reason": f"unknown_model_{model}"
+                }
             # Apply turnover cap only if we have last weights
             if turnover_cap is not None and last_weights is not None and not last_weights.empty:
                 w = self._apply_turnover_cap(last_weights.reindex(w.index, fill_value=0.0), w, cap=turnover_cap)
@@ -425,6 +429,23 @@ class BacktestEngine:
 
             # Choose model (allow override via UI)
             model = model_choice
+            model_choice = st.selectbox(
+            "Optimization Model",
+            options=[
+                ("Auto (regime-based)", "auto"),
+                ("Max Sharpe", "max_sharpe"),
+                ("Min Variance", "min_variance"),  
+                ("Max Quadratic Utility", "max_qu"),
+                ("Equal Risk Contribution", "erc"),
+                ("Equal Weight", "equal_weight")
+            ],
+            format_func=lambda x: x[0],
+            help="Auto mode: Risk-On→Max Sharpe, Risk-Off→Min Variance, Neutral→Max Quadratic Utility"
+            )[1]
+        
+        # Show what auto mode will do
+        if model_choice == "auto":
+            st.info("🤖 Auto will use:\n- Risk-On: Max Sharpe\n- Neutral: Max Quadratic Utility\n- Risk-Off: Min Variance")
             if model_choice == "auto":
                 model = {"risk_on": "max_sharpe", "risk_off": "min_variance", "neutral": "max_qu"}[regime]
 
@@ -651,6 +672,7 @@ def main():
     config = Config()
     optimizer = PortfolioOptimizer(max_weight=config.MAX_POSITION_SIZE, transaction_cost=config.TRANSACTION_COST, slippage=config.SLIPPAGE)
     engine = BacktestEngine(optimizer, config)
+    
 
     # Sidebar controls
     with st.sidebar:
