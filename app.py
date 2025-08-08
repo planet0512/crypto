@@ -413,7 +413,7 @@ class BacktestEngine:
             if p.empty:
                 continue
 
-portfolio_returns.append(p)
+            portfolio_returns.append(p)
 
             rec = target_w.to_dict()
             rec.update({
