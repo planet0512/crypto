@@ -429,25 +429,12 @@ class BacktestEngine:
 
             # Choose model (allow override via UI)
             model = model_choice
-            model_choice = st.selectbox(
-            "Optimization Model",
-            options=[
-                ("Auto (regime-based)", "auto"),
-                ("Max Sharpe", "max_sharpe"),
-                ("Min Variance", "min_variance"),  
-                ("Max Quadratic Utility", "max_qu"),
-                ("Equal Risk Contribution", "erc"),
-                ("Equal Weight", "equal_weight")
-            ],
-            format_func=lambda x: x[0],
-            help="Auto mode: Risk-On→Max Sharpe, Risk-Off→Min Variance, Neutral→Max Quadratic Utility"
-            )[1]
-        
-        # Show what auto mode will do
-        if model_choice == "auto":
-            st.info("🤖 Auto will use:\n- Risk-On: Max Sharpe\n- Neutral: Max Quadratic Utility\n- Risk-Off: Min Variance")
             if model_choice == "auto":
                 model = {"risk_on": "max_sharpe", "risk_off": "min_variance", "neutral": "max_qu"}[regime]
+
+            # Debug info (only show on first iteration to avoid spam)
+            if i == 0:
+                st.info(f"🎯 Using model: {model} (selected: {model_choice}, regime: {regime})")
 
             target_w, meta = self.optimizer.get_optimized_weights(
                 hist_prices,
@@ -512,6 +499,7 @@ class BacktestEngine:
     def _calculate_performance_metrics(self, returns: pd.Series, prices_df: pd.DataFrame, transaction_costs: list) -> Dict:
         if returns.empty: 
             return {"error": "No returns to analyze"}
+            
         r = pd.to_numeric(returns, errors="coerce")
         r = r.replace([np.inf, -np.inf], np.nan).dropna()
     
@@ -536,17 +524,54 @@ class BacktestEngine:
             drawdown = (cum_curve - running_max) / running_max
             max_dd = drawdown.min()
             
+            # Benchmark comparison (BTC if available)
+            bench = {}
+            if "BTC" in prices_df.columns:
+                btc = compute_returns_from_data(prices_df[["BTC"]])["BTC"]
+                # align BTC exactly to the strategy period
+                btc = btc.reindex(r.index).dropna()
+                btc = pd.to_numeric(btc, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                if len(btc) > 0:
+                    cum_btc = float(np.prod(1.0 + btc.values))
+                    btc_ann_ret = (cum_btc ** (365.0 / len(btc)) - 1.0) if cum_btc > 0 else np.nan
+                    btc_vol = float(np.nan_to_num(btc.std(), nan=0.0)) * np.sqrt(365.0)
+                    btc_sharpe = (btc_ann_ret / btc_vol) if (btc_vol > 0 and np.isfinite(btc_ann_ret)) else 0.0
+                    btc_curve = (1 + btc).cumprod()
+                    btc_dd = (btc_curve - btc_curve.cummax()) / btc_curve.cummax()
+                    bench = {
+                        "btc_annual_return": btc_ann_ret,
+                        "btc_volatility": btc_vol,
+                        "btc_sharpe_ratio": btc_sharpe,
+                        "btc_max_drawdown": float(btc_dd.min()),
+                        "excess_return": (ann_ret - btc_ann_ret) if np.isfinite(ann_ret) and np.isfinite(btc_ann_ret) else np.nan,
+                        "excess_sharpe": sharpe - btc_sharpe,
+                    }
+
+            # Transaction cost analysis
+            total_txn = float(sum(transaction_costs))
+            avg_annual_txn = total_txn * (365.0 / len(r)) if len(r) > 0 else 0.0
+
+            # Downside risk metrics
+            downside = r[r < 0]
+            down_vol = (downside.std() * np.sqrt(365.0)) if len(downside) > 1 else 0.0
+            sortino = (ann_ret / down_vol) if (down_vol > 0 and np.isfinite(ann_ret)) else 0.0
+
             return {
                 "total_return": cum_ret - 1.0,
                 "annualized_return": ann_ret,
                 "annualized_volatility": ann_vol,
                 "sharpe_ratio": sharpe,
+                "sortino_ratio": sortino,
                 "max_drawdown": max_dd,
+                "total_transaction_costs": total_txn,
+                "avg_annual_transaction_cost": avg_annual_txn,
                 "observation_count": len(r),
                 "years_analyzed": years,
+                **bench,
             }
             
         except Exception as e:
+            st.error(f"❌ Performance metrics calculation failed: {e}")
             return {"error": f"Metrics calculation failed: {e}"}
 
 # ------------------------------------------------------------------------------#
