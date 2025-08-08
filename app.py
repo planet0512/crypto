@@ -194,18 +194,17 @@ class PortfolioOptimizer:
         Returns an empty DataFrame instead of raising if no valid assets remain.
         """
         min_obs = max(30, len(prices) // 10)
-    
+
         # Require min_obs valid points; allow forward-fill for partial histories
         valid_cols = prices.count()[lambda x: x >= min_obs].index
         cleaned = prices[valid_cols].ffill().dropna(how="all")
-    
+
         # Remove assets with near-zero volatility
         returns = cleaned.pct_change().dropna()
         valid_assets = returns.std()[lambda x: x > 1e-6].index
         cleaned = cleaned[valid_assets]
-    
-        # If no valid assets remain, return empty (caller will handle)
-        return cleaned
+
+        return cleaned  # may be empty
 
     def get_optimized_weights(
         self,
@@ -220,7 +219,7 @@ class PortfolioOptimizer:
     ) -> Tuple[pd.Series, Dict]:
         try:
             clean_prices = self.clean_price_data(prices)
-    
+
             # Handle case: no valid or too few assets after cleaning
             if clean_prices.empty or len(clean_prices.columns) < 2:
                 if last_weights is not None and not last_weights.empty:
@@ -229,24 +228,12 @@ class PortfolioOptimizer:
                         "method": "carry_forward", "reason": "no_valid_assets"
                     }
                 else:
-                    # Fall back to equal-weight allocation
-                    return self._fallback_weights(prices.columns), {
+                    # Fall back to equal-weight allocation over whatever assets exist in prices
+                    return self._fallback_weights(list(prices.columns)), {
                         "method": "equal_weight", "reason": "no_valid_assets"
                     }
 
             assets = list(clean_prices.columns)
-
-
-            # If we have too few assets, carry forward weights if possible
-            if len(assets) < 2:
-                if last_weights is not None and not last_weights.empty:
-                    return last_weights.reindex(prices.columns, fill_value=0.0), {
-                        "method": "carry_forward", "reason": "insufficient_assets"
-                    }
-                else:
-                    return self._fallback_weights(prices.columns), {
-                        "method":"equal_weight","reason":"insufficient_assets"
-                    }
 
             # Bounds adjust by regime
             if market_regime == "risk_off":
@@ -314,10 +301,15 @@ class PortfolioOptimizer:
 
         except (OptimizationError, ValueError, cp.SolverError) as e:
             st.error(f"Optimization failed for assets {list(prices.columns)}: {e}")
-            return self._fallback_weights(prices.columns), {
-                "method":"equal_weight","reason":str(e)
+            return self._fallback_weights(list(prices.columns)), {
+                "method": "equal_weight", "reason": str(e)
             }
 
+    def _fallback_weights(self, asset_names: list) -> pd.Series:
+        """Equal weight allocation for the given asset list."""
+        if not asset_names:
+            return pd.Series(dtype=float)
+        return pd.Series(1.0 / len(asset_names), index=asset_names, dtype=float)
 
 # ------------------------------------------------------------------------------#
 # Backtest
